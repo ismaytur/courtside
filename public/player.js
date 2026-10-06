@@ -10,7 +10,7 @@ const el = {
   play: $('#pPlay'), back: $('#pBack'), fwd: $('#pFwd'), time: $('#pTime'),
   timeline: $('#pTimeline'), pieces: $('#pPieces'), played: $('#pPlayed'), head: $('#pHead'), hover: $('#pHover'),
   mute: $('#pMute'), vol: $('#pVol'), full: $('#pFull'), stats: $('#pStats'), copy: $('#pCopy'), close: $('#pClose'),
-  stage: $('#pStage'),
+  stage: $('#pStage'), box: $('#pBox'),
 };
 
 let game = null, offset = 0, duration = null, statusTimer = null, saveTimer = null, started = false;
@@ -149,13 +149,14 @@ function pipeError(p, err) {
   showMsg(`Playback failed: ${err.message || err}.<br>Use <b>Copy URL for VLC</b> to open it in VLC or IINA instead.`, { error: true });
 }
 
-// Safari (WebKit) can't start decoding on open-GOP I-frames, which copy-mode seeks often land on.
+// Safari (WebKit) stalls on the open-GOP I-frames these broadcasts use (at the start, after a seek,
+// sometimes mid-stream), so Safari always gets a hardware re-encode with clean GOPs. Others get the original.
 const IS_WEBKIT = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|OPR|Firefox/.test(navigator.userAgent);
 
 function load(t) {
   offset = Math.max(0, duration ? Math.min(t, duration - 5) : t);
   stopPipe();
-  const reencode = IS_WEBKIT && offset > 0;
+  const reencode = IS_WEBKIT;
   const src = `/api/stream/${game.id}/play?t=${offset.toFixed(2)}${reencode ? '&reencode=1' : ''}`;
   const mime = reencode ? lastStatus?.mimeReencoded : lastStatus?.mime;
   if (MSE && mime && MSE.isTypeSupported(mime)) startMse(src, mime);
@@ -283,7 +284,9 @@ export function closePlayer() {
   stopPipe(); // aborts the fetch, which stops ffmpeg on the server
   el.video.removeAttribute('src');
   el.video.load();
-  if (document.fullscreenElement) document.exitFullscreen();
+  exitFullscreen();
+  clearTimeout(idleTimer);
+  el.root.classList.remove('idle', 'fs');
   el.root.hidden = true;
   document.body.style.overflow = '';
   const g = game;
@@ -312,7 +315,7 @@ const toggle = () => { if (!started) return; v.paused ? v.play() : v.pause(); };
 el.play.addEventListener('click', toggle);
 el.bigPlay.addEventListener('click', () => { v.play(); el.bigPlay.hidden = true; });
 v.addEventListener('click', toggle);
-v.addEventListener('dblclick', () => el.full.click());
+v.addEventListener('dblclick', () => toggleFullscreen());
 el.back.addEventListener('click', () => seek(now() - 10));
 el.fwd.addEventListener('click', () => seek(now() + 30));
 el.close.addEventListener('click', closePlayer);
@@ -320,10 +323,51 @@ el.resume.addEventListener('click', (e) => { if (e.target.closest('[data-restart
 
 el.mute.addEventListener('click', () => { v.muted = !v.muted; el.mute.textContent = v.muted ? '🔇' : '🔊'; });
 el.vol.addEventListener('input', () => { v.volume = Number(el.vol.value); v.muted = v.volume === 0; el.mute.textContent = v.muted ? '🔇' : '🔊'; });
-el.full.addEventListener('click', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else el.root.requestFullscreen?.();
-});
+// Fullscreen: standard API, Safari's prefixed one, or (iPhone) the video's native fullscreen.
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+function exitFullscreen() {
+  if (!fsElement()) return;
+  (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+}
+function toggleFullscreen() {
+  if (fsElement()) return exitFullscreen();
+  const r = el.box;
+  if (r.requestFullscreen) r.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+  else if (r.webkitRequestFullscreen) r.webkitRequestFullscreen();
+  else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+}
+const FS_ICON = {
+  enter: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  exit: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>',
+};
+el.full.innerHTML = FS_ICON.enter;
+function onFullscreenChange() {
+  const on = !!fsElement();
+  el.root.classList.toggle('fs', on);
+  el.full.innerHTML = on ? FS_ICON.exit : FS_ICON.enter;
+  el.full.setAttribute('aria-label', on ? 'Exit fullscreen (F)' : 'Fullscreen (F)');
+  wake();
+}
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+el.full.addEventListener('click', toggleFullscreen);
+
+// In fullscreen, hide the title bar, controls and cursor 3 s after the mouse stops (while playing).
+let idleTimer = null;
+function wake() {
+  el.root.classList.remove('idle');
+  clearTimeout(idleTimer);
+  if (!fsElement()) return; // normal view: controls always visible
+  idleTimer = setTimeout(() => {
+    const overChrome = el.root.querySelector('.player-top:hover, .player-bottom:hover');
+    if (game && !v.paused && !dragging && !overChrome) el.root.classList.add('idle');
+    else if (game) wake();
+  }, 3000);
+}
+el.root.addEventListener('pointermove', wake);
+el.root.addEventListener('pointerdown', wake);
+v.addEventListener('pause', wake);
+v.addEventListener('play', wake);
 
 el.copy.addEventListener('click', async () => {
   const url = `${location.origin}/api/stream/${game.id}/raw`;
@@ -368,9 +412,10 @@ document.addEventListener('keydown', (e) => {
     ' ': toggle, k: toggle,
     ArrowLeft: () => seek(now() - 10), ArrowRight: () => seek(now() + 10),
     j: () => seek(now() - 30), l: () => seek(now() + 30),
-    f: () => el.full.click(), m: () => el.mute.click(),
-    Escape: () => { if (!document.fullscreenElement) closePlayer(); },
+    f: toggleFullscreen, m: () => el.mute.click(),
+    Escape: () => { if (!fsElement()) closePlayer(); },
   };
+  wake();
   const fn = keys[e.key];
   if (fn) { e.preventDefault(); fn(); }
 });
