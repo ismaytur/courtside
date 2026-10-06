@@ -1,8 +1,9 @@
 # Dependencies
 node_modules/
 
-# Local data: only the cached poster images are tracked.
+# Local data: only the library database and cached poster images are tracked.
 data/*
+!data/games.db
 !data/img/
 data/img/*
 !data/img/*.jpg
@@ -20,10 +21,10 @@ data/img/*
 *.mov
 *.webm
 
-# SQLite (rebuilt by "Fetch new games")
-*.db
+# SQLite temp files (the app doesn't use WAL, but just in case)
 *.db-shm
 *.db-wal
+*.db-journal
 
 # OS / editor
 .DS_Store
