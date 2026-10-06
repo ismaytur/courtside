@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Local data: only the cached poster images are tracked.
+data/*
+!data/img/
+data/img/*
+!data/img/*.jpg
+!data/img/*.jpeg
+!data/img/*.png
+!data/img/*.webp
+
+# Never commit media or torrent files, wherever they end up
+*.torrent
+*.mkv
+*.mp4
+*.m4v
+*.ts
+*.avi
+*.mov
+*.webm
+
+# SQLite (rebuilt by "Fetch new games")
+*.db
+*.db-shm
+*.db-wal
+
+# OS / editor
+.DS_Store
+*.log

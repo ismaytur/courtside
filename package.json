@@ -1,0 +1,19 @@
+{
+  "name": "courtside",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local library of basketball game torrents from sport-video.org.ua, stored in SQLite",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server.mjs"
+  },
+  "dependencies": {
+    "webtorrent": "^2.8.5"
+  },
+  "overrides": {
+    "uint8-util": "2.2.5"
+  }
+}
