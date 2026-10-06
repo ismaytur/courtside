@@ -90,12 +90,44 @@ the player. Settings (environment variables):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `STREAM_UPLOAD_KBPS` | `256` | upload cap in KB/s (`0` = unlimited) |
-| `STREAM_CACHE_GB` | `30` | max size of `data/streams`; least recently watched games are deleted first |
+| `STREAM_CACHE_GB` | `30` | max size of `~/.courtside/streams`; least recently watched games are deleted first |
+| `COURTSIDE_MEDIA_DIR` | `~/.courtside` | where streamed videos and .torrent files are kept |
 
 ## Data
 
 - `data/games.db`: SQLite (tables `games`, `meta`, `sync_runs`)
 - `data/img/`: cached poster images
-- `data/streams/`: streamed game files (cache, size-capped); `data/torrents/`: .torrent files
+- `~/.courtside/streams/`, `~/.courtside/torrents/`: streamed videos (size-capped cache) and .torrent
+  files. They live outside the repo, so every clone (dev folder, Mac app) shares them.
 
 Favorites, "downloaded" marks and watch positions are stored per game in the same database.
+
+## Mac app
+
+```bash
+npm run build:app    # -> dist/Courtside.app (needs Xcode or its Command Line Tools)
+```
+
+Drag `dist/Courtside.app` to Applications. No Apple developer account is needed; it's signed
+locally for this Mac. It's a native window around the web app that runs from its **own clone**
+of this repo in `~/Library/Application Support/Courtside/repo`:
+
+- **On launch** it saves local data changes as a commit, then fetches GitHub's `main`. Newer code
+  is applied (and `npm ci` run if dependencies changed) and the server restarts. If local commits
+  can't be replayed on top of GitHub's, **GitHub wins** and they're dropped. The server then starts
+  on a random port.
+- **While open** it checks GitHub every 30 minutes and updates and reloads when you're not
+  watching or fetching.
+- **Data is pushed automatically**: a fetch that adds games is committed and pushed straight away
+  (`Fetch: +3 games (NBA 2, EuroLeague 1)`). Favorites, downloaded marks and watch progress are
+  committed a couple of minutes after the last change, and on quit.
+- Links to Mega, source pages and .torrent files open in your default browser.
+  **View → Open in Browser** opens the library there too; **View → Show Log** shows
+  `~/Library/Logs/Courtside.log`.
+
+Rebuild the app only when `mac/Courtside.swift` changes or Node moves (its path is recorded at
+build time). Everything else updates itself from GitHub.
+
+**Develop in a separate clone** (like this folder), push to `main`, then quit and reopen the app
+to pick it up. Don't commit `data/games.db` from the dev clone; only the app should push data,
+since git can't merge two edited copies of a SQLite file.

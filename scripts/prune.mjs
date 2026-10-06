@@ -1,5 +1,5 @@
 // Removes games whose league is in config.json "ignore" from the database, together with their
-// poster image (data/img), .torrent file (data/torrents) and streamed video (data/streams).
+// poster image (data/img), .torrent file and streamed video (in the media dir, ~/.courtside).
 //
 //   npm run prune          show what would be removed
 //   npm run prune -- --yes remove it
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../lib/db.mjs';
-import { loadConfig } from '../lib/config.mjs';
+import { loadConfig, MEDIA_DIR } from '../lib/config.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
@@ -38,8 +38,8 @@ for (const g of games) {
     const name = path.basename(new URL(g.image_url).pathname);
     if (!keptImages.has(name)) files.push(path.join(DATA, 'img', name));
   }
-  files.push(path.join(DATA, 'torrents', `${g.id}.torrent`));
-  files.push(path.join(DATA, 'streams', String(g.id)));
+  files.push(path.join(MEDIA_DIR, 'torrents', `${g.id}.torrent`));
+  files.push(path.join(MEDIA_DIR, 'streams', String(g.id)));
 }
 const existing = files.filter((f) => fs.existsSync(f));
 
@@ -50,11 +50,11 @@ const sizeOf = (p) => {
 };
 const bytes = existing.reduce((a, f) => a + sizeOf(f), 0);
 const byLeague = Object.entries(games.reduce((a, g) => ({ ...a, [g.league]: (a[g.league] ?? 0) + 1 }), {}));
-const count = (dir) => existing.filter((f) => f.startsWith(path.join(DATA, dir) + path.sep)).length;
+const count = (dir) => existing.filter((f) => f.startsWith(dir + path.sep)).length;
 
 console.log(`Ignored leagues: ${ignore.join(', ')}`);
 console.log(`Games: ${games.length}${byLeague.length ? ` (${byLeague.map(([l, n]) => `${l} ${n}`).join(', ')})` : ''}`);
-console.log(`Files: ${count('img')} images, ${count('torrents')} .torrent files, ${count('streams')} streamed videos (${(bytes / 1e9).toFixed(2)} GB)`);
+console.log(`Files: ${count(path.join(DATA, 'img'))} images, ${count(path.join(MEDIA_DIR, 'torrents'))} .torrent files, ${count(path.join(MEDIA_DIR, 'streams'))} streamed videos (${(bytes / 1e9).toFixed(2)} GB)`);
 
 if (!games.length && !existing.length) {
   console.log('Nothing to prune.');

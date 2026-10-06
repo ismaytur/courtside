@@ -29,3 +29,6 @@ data/img/*
 # OS / editor
 .DS_Store
 *.log
+
+# Built Mac app
+dist/

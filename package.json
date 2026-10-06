@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server.mjs",
-    "prune": "node --no-warnings=ExperimentalWarning scripts/prune.mjs"
+    "prune": "node --no-warnings=ExperimentalWarning scripts/prune.mjs",
+    "build:app": "bash scripts/build-mac-app.sh"
   },
   "dependencies": {
     "webtorrent": "^2.8.5"

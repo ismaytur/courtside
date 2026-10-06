@@ -1,22 +1,20 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openDb } from './lib/db.mjs';
 import { createSyncer } from './lib/sync.mjs';
 import { classify } from './lib/classify.mjs';
 import { getMeta } from './lib/db.mjs';
 import { createStreamer } from './lib/streamer.mjs';
+import { MEDIA_DIR } from './lib/config.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT) || 4321;
 const DATA = path.join(ROOT, 'data');
 const IMG_CACHE = path.join(DATA, 'img');
-fs.mkdirSync(IMG_CACHE, { recursive: true });
 
-const db = openDb(path.join(DATA, 'games.db'));
-const syncer = createSyncer(db);
-const streamer = createStreamer({ dataDir: DATA, port: PORT, db });
+// Set up in startServer().
+let db, syncer, streamer, hooks = {};
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg' };
 
@@ -111,6 +109,7 @@ function reclassify() {
     upd.run(c.title, c.game_date, c.league, c.season, c.phase, c.home_team, c.away_team, c.is_event, r.id);
   }
   db.exec('COMMIT');
+  hooks.onEdit?.();
   return { updated: rows.length };
 }
 
@@ -137,7 +136,7 @@ async function serveImage(res, u) {
 
 // ---- routing ---------------------------------------------------------------
 
-const server = http.createServer(async (req, res) => {
+async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.searchParams;
   try {
@@ -160,6 +159,7 @@ const server = http.createServer(async (req, res) => {
       for (const k of ['watch_position', 'duration']) {
         if (k in body) db.prepare(`UPDATE games SET ${k} = ? WHERE id = ?`).run(Number(body[k]) || null, Number(m[1]));
       }
+      hooks.onEdit?.();
       return send(res, 200, db.prepare('SELECT * FROM games WHERE id = ?').get(Number(m[1])));
     }
 
@@ -193,8 +193,37 @@ const server = http.createServer(async (req, res) => {
     console.error(err);
     send(res, 500, { error: err.message });
   }
-});
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Courtside library running at http://localhost:${PORT}`);
-});
+/**
+ * Start the server. `port` 0 picks a free port. `hooks` (used by the Mac app):
+ *   onSyncDone(status)  after every fetch finishes
+ *   onEdit()            after favorites / watch positions / reclassify change the database
+ * Resolves to { port, isBusy(), close() }.
+ */
+export async function startServer({ port = 4321, hooks: h = {} } = {}) {
+  hooks = h;
+  fs.mkdirSync(IMG_CACHE, { recursive: true });
+  db = openDb(path.join(DATA, 'games.db'));
+  syncer = createSyncer(db, { onDone: (status) => hooks.onSyncDone?.(status) });
+  let actualPort = port;
+  streamer = createStreamer({ mediaDir: MEDIA_DIR, port: () => actualPort, db });
+
+  const server = http.createServer(handle);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  actualPort = server.address().port;
+  return {
+    port: actualPort,
+    isBusy: () => syncer.status().running || streamer.activeCount() > 0,
+    close: () => new Promise((resolve) => { server.close(() => resolve()); server.closeAllConnections?.(); }),
+  };
+}
+
+// `npm start` / `node server.mjs`
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const { port } = await startServer({ port: Number(process.env.PORT) || 4321 });
+  console.log(`Courtside library running at http://localhost:${port}`);
+}
