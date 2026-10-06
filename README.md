@@ -12,6 +12,9 @@ npm install          # webtorrent, for streaming
 npm start            # http://localhost:4321
 ```
 
+Developer docs: [how it works](docs/architecture.md), [adding a source](docs/adding-a-source.md),
+[development and testing](docs/development.md).
+
 ## Your data: `~/.courtside`
 
 Everything local lives outside the repo, shared by every clone (dev folder, Mac app). Nothing
@@ -65,10 +68,7 @@ matched to a game by date plus both teams in either order ("A at B" = "B vs A"),
 title for events like the All-Star Game. A release whose torrent is already attached to the game
 is skipped.
 
-**Adding a source:** create `lib/sources/<id>.mjs` with `listPage(n)` (listing page n, newest
-first, or null at the end) and `resolve(entry)` (extra links for one entry), register it in
-`lib/sources/index.mjs`, and add `"<id>": true` under `sources` in `config.defaults.json`.
-`lib/sources/index.mjs` describes the interface; `sport-video.mjs` is the example.
+**Adding a source:** see [docs/adding-a-source.md](docs/adding-a-source.md).
 
 ## Classification
 
