@@ -9,7 +9,7 @@ import { createStreamer } from './lib/streamer.mjs';
 import { loadSettings, saveSettings, KNOWN_LEAGUES } from './lib/settings.mjs';
 import { SOURCES } from './lib/sources/index.mjs';
 import { HOME_DIR } from './lib/paths.mjs';
-import { imageCacheFile, migrateRepoImages } from './lib/images.mjs';
+import { imageCacheFile } from './lib/images.mjs';
 import { prunePreview, pruneLeagues } from './lib/prune.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -300,7 +300,6 @@ function scheduleFetches() {
 export async function startServer({ port = 4321, hooks: h = {} } = {}) {
   hooks = h;
   db = openDb();
-  migrateRepoImages();
   syncer = createSyncer(db);
   let actualPort = port;
   streamer = createStreamer({ port: () => actualPort });

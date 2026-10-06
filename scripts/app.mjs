@@ -11,10 +11,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile, execFileSync } from 'node:child_process';
-import { REPO_DIR as ROOT, DB_PATH, ensureHome } from '../lib/paths.mjs';
+import { execFile } from 'node:child_process';
+import { REPO_DIR as ROOT } from '../lib/paths.mjs';
 import { update, currentVersion } from '../lib/gitsync.mjs';
-import { migrateRepoImages } from '../lib/images.mjs';
 
 const RESTART = 75;
 const UPDATE_EVERY_MS = 30 * 60 * 1000;
@@ -48,26 +47,6 @@ async function ensureDependencies() {
 }
 
 // ---- 1-2. update before anything else is loaded ----------------------------
-// Older versions kept the library in the repo (data/); the update below would delete it, so move
-// it to ~/.courtside first.
-ensureHome();
-const oldDb = path.join(ROOT, 'data', 'games.db');
-if (!fs.existsSync(DB_PATH) && fs.existsSync(oldDb)) fs.copyFileSync(oldDb, DB_PATH);
-if (!fs.existsSync(DB_PATH)) recoverDbFromGit();
-migrateRepoImages();
-
-// The previous version's updater may already have deleted data/games.db (it's no longer tracked);
-// its last committed copy is still in history.
-function recoverDbFromGit() {
-  const sh = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'buffer', stdio: ['ignore', 'pipe', 'ignore'] });
-  try {
-    const removedIn = sh(['rev-list', '-1', 'HEAD', '--', 'data/games.db']).toString().trim();
-    if (!removedIn) return;
-    fs.writeFileSync(DB_PATH, sh(['show', `${removedIn}^:data/games.db`]));
-    console.log('[app] recovered the library from git history');
-  } catch { /* fresh install: start empty */ }
-}
-
 status('Checking GitHub for updates…');
 const first = await checkForUpdates();
 if (first.changed.length) {
