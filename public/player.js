@@ -10,11 +10,14 @@ const el = {
   play: $('#pPlay'), back: $('#pBack'), fwd: $('#pFwd'), time: $('#pTime'),
   timeline: $('#pTimeline'), pieces: $('#pPieces'), played: $('#pPlayed'), head: $('#pHead'), hover: $('#pHover'),
   mute: $('#pMute'), vol: $('#pVol'), full: $('#pFull'), stats: $('#pStats'), copy: $('#pCopy'), close: $('#pClose'),
-  stage: $('#pStage'), box: $('#pBox'),
+  stage: $('#pStage'), box: $('#pBox'), release: $('#pRelease'), part: $('#pPart'),
 };
 
 let game = null, offset = 0, duration = null, statusTimer = null, saveTimer = null, started = false;
 let lastStatus = null, dragging = false, onCloseCb = null, openedAt = 0;
+// What's playing: one of the game's releases (sources) that has a torrent, and a file in it.
+let releases = [], rel = null, fileIdx = 0, startAt = null;
+const streamUrl = (action, extra = '') => `/api/stream/${rel.id}/${action}?file=${fileIdx}${extra}`;
 
 const fmt = (s) => {
   if (s == null || !isFinite(s)) return '--:--';
@@ -45,9 +48,11 @@ function savePosition() {
   const value = duration && pos > duration - 60 ? 0 : pos;
   game.watch_position = value;
   game.duration = duration;
+  game.watch_release = rel.id;
+  game.watch_file = fileIdx;
   api(`/api/games/${game.id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ watch_position: value, duration }),
+    body: JSON.stringify({ watch_position: value, duration, watch_release: rel.id, watch_file: fileIdx }),
   }).catch(() => {});
 }
 
@@ -157,7 +162,7 @@ function load(t) {
   offset = Math.max(0, duration ? Math.min(t, duration - 5) : t);
   stopPipe();
   const reencode = IS_WEBKIT;
-  const src = `/api/stream/${game.id}/play?t=${offset.toFixed(2)}${reencode ? '&reencode=1' : ''}`;
+  const src = streamUrl('play', `&t=${offset.toFixed(2)}${reencode ? '&reencode=1' : ''}`);
   const mime = reencode ? lastStatus?.mimeReencoded : lastStatus?.mime;
   if (MSE && mime && MSE.isTypeSupported(mime)) startMse(src, mime);
   else el.video.src = src; // no MediaSource (old iOS): let the browser try directly
@@ -209,13 +214,14 @@ function drawPieces(pieces) {
 
 async function pollStatus() {
   if (!game) return;
-  const id = game.id;
-  const s = await api(`/api/stream/${id}/status`).catch(() => null);
-  if (!game || game.id !== id || !s) return;
+  const want = `${rel.id}/${fileIdx}`;
+  const s = await api(streamUrl('status')).catch(() => null);
+  if (!game || want !== `${rel.id}/${fileIdx}` || !s) return;
   lastStatus = s;
+  renderPickers(s);
   if (!s.active) {
     if (s.error) { showMsg(`Couldn't start the torrent: ${s.error}`, { error: true }); return; }
-    await api(`/api/stream/${id}/start`, { method: 'POST' }); // dropped after idling; restart it
+    await api(streamUrl('start'), { method: 'POST' }); // dropped after idling; restart it
   } else if (s.stage === 'metadata' || (!started && !s.peers)) {
     const waited = (Date.now() - openedAt) / 1000;
     showMsg(waited > 45 && !s.peers
@@ -226,7 +232,11 @@ async function pollStatus() {
   if (s.active && s.stage === 'ready') {
     if (s.duration && !duration) duration = s.duration;
     if (!started && s.duration) {
-      const resumeAt = game.watch_position > 30 && game.watch_position < s.duration - 60 ? game.watch_position : 0;
+      // Resume where you left off, if that was this release and file.
+      const same = (game.watch_release ?? rel.id) === rel.id && (game.watch_file ?? 0) === fileIdx;
+      const saved = same && game.watch_position > 30 && game.watch_position < s.duration - 60 ? game.watch_position : 0;
+      const resumeAt = startAt ?? saved;
+      startAt = null;
       load(resumeAt);
       if (resumeAt) {
         el.resume.hidden = false;
@@ -250,10 +260,51 @@ async function pollStatus() {
   render();
 }
 
+// Source / part pickers: only shown when there's a choice.
+function renderPickers(s) {
+  const relOpts = releases.map((r) => `<option value="${r.id}" ${r.id === rel.id ? 'selected' : ''}>${escHtml(releaseLabel(r))}</option>`).join('');
+  if (el.release.dataset.html !== relOpts) { el.release.innerHTML = relOpts; el.release.dataset.html = relOpts; }
+  el.release.hidden = releases.length < 2;
+  const files = s?.files ?? [];
+  const partOpts = files.map((f) => `<option value="${f.index}" ${f.index === fileIdx ? 'selected' : ''}>${escHtml(partLabel(f, files.length))}</option>`).join('');
+  if (el.part.dataset.html !== partOpts) { el.part.innerHTML = partOpts; el.part.dataset.html = partOpts; }
+  el.part.hidden = files.length < 2;
+}
+const escHtml = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function releaseLabel(r) {
+  const res = r.resolution?.replace(/^1920x1080$/, '1080p').replace(/^1280x720$/, '720p');
+  return [r.source_name, res].filter(Boolean).join(' · ');
+}
+function partLabel(f, n) {
+  const name = f.name.replace(/\.[^.]+$/, '');
+  return `Part ${f.index + 1} of ${n}${name.length < 60 ? ` — ${name}` : ''}`;
+}
+
+/** Switch to another release and/or file, starting at `t` (default: saved position or 0). */
+function switchTo(nextRel, nextFile, t = null) {
+  savePosition();
+  stopPipe();
+  el.video.pause();
+  el.video.removeAttribute('src');
+  el.video.load();
+  rel = nextRel; fileIdx = nextFile; startAt = t;
+  offset = 0; duration = null; started = false; lastStatus = null; openedAt = Date.now();
+  el.pieces.getContext('2d').clearRect(0, 0, el.pieces.width, 4);
+  showMsg('Connecting to peers…');
+  render();
+  api(streamUrl('start'), { method: 'POST' }).then(pollStatus);
+}
+
 export function openPlayer(g, { color, onClose } = {}) {
   game = { ...g };
   onCloseCb = onClose;
+  releases = (g.releases ?? []).filter((r) => r.torrent_url);
+  rel = releases.find((r) => r.id === g.watch_release) ?? releases[0];
+  fileIdx = rel.id === g.watch_release ? (g.watch_file ?? 0) : 0;
+  startAt = null;
   offset = 0; duration = g.duration || null; started = false; lastStatus = null; openedAt = Date.now();
+  el.release.dataset.html = el.part.dataset.html = '';
+  renderPickers(null);
   el.title.textContent = g.title;
   el.badge.textContent = g.league;
   el.badge.style.setProperty('--c', color ?? 'var(--accent)');
@@ -265,7 +316,7 @@ export function openPlayer(g, { color, onClose } = {}) {
   document.body.style.overflow = 'hidden';
   showMsg('Fetching the .torrent and connecting to peers…');
   render();
-  api(`/api/stream/${g.id}/start`, { method: 'POST' }).then((s) => {
+  api(streamUrl('start'), { method: 'POST' }).then((s) => {
     if (s.error) showMsg(s.error, { error: true });
     pollStatus();
   });
@@ -304,7 +355,18 @@ v.addEventListener('waiting', () => { if (game) showMsg(`Buffering ${fmt(now())}
 v.addEventListener('canplay', hideMsg);
 v.addEventListener('ended', () => {
   // The stream ends when the file does; if we're short of the end, it hiccupped — pick up again.
-  if (duration && now() < duration - 10) load(now());
+  if (duration && now() < duration - 10) return load(now());
+  // Multi-part releases: go on to the next part.
+  const files = lastStatus?.files ?? [];
+  if (fileIdx + 1 < files.length) switchTo(rel, fileIdx + 1, 0);
+});
+el.release.addEventListener('change', () => {
+  const next = releases.find((r) => r.id === Number(el.release.value));
+  if (next && next !== rel) switchTo(next, 0, now()); // another copy of the same game: keep the time
+});
+el.part.addEventListener('change', () => {
+  const next = Number(el.part.value);
+  if (next !== fileIdx) switchTo(rel, next, 0);
 });
 v.addEventListener('error', () => {
   if (!game || !v.getAttribute('src')) return;
@@ -370,7 +432,7 @@ v.addEventListener('pause', wake);
 v.addEventListener('play', wake);
 
 el.copy.addEventListener('click', async () => {
-  const url = `${location.origin}/api/stream/${game.id}/raw`;
+  const url = `${location.origin}${streamUrl('raw')}`;
   try { await navigator.clipboard.writeText(url); } catch { prompt('Stream URL', url); return; }
   el.copy.textContent = 'Copied ✓';
   setTimeout(() => { el.copy.textContent = 'Copy URL for VLC'; }, 1800);

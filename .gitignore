@@ -1,15 +1,8 @@
 # Dependencies
 node_modules/
 
-# Local data: only the library database and cached poster images are tracked.
-data/*
-!data/games.db
-!data/img/
-data/img/*
-!data/img/*.jpg
-!data/img/*.jpeg
-!data/img/*.png
-!data/img/*.webp
+# Local data lives in ~/.courtside (lib/paths.mjs); data/ is where older versions kept it.
+data/
 
 # Never commit media or torrent files, wherever they end up
 *.torrent
@@ -21,7 +14,8 @@ data/img/*
 *.mov
 *.webm
 
-# SQLite temp files (the app doesn't use WAL, but just in case)
+# SQLite files, wherever they end up
+*.db
 *.db-shm
 *.db-wal
 *.db-journal

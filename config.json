@@ -1,6 +1,0 @@
-{
-  "leagues": {
-    "fetch": ["NBA", "EuroLeague", "International"],
-    "ignore": ["WNBA", "NCAA", "Other"]
-  }
-}

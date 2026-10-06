@@ -1,19 +1,12 @@
 import { openPlayer } from './player.js';
+import { initSettings, openSettings, updateSyncStatus } from './settings.js';
+import { $, esc, api, send, timeAgo, color } from './util.js';
 
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-const LEAGUE_COLOR = {
-  NBA: 'var(--nba)', WNBA: 'var(--wnba)', EuroLeague: 'var(--euroleague)',
-  NCAA: 'var(--ncaa)', International: 'var(--international)', Other: 'var(--other)',
-};
-const color = (league) => LEAGUE_COLOR[league] ?? 'var(--other)';
-
-const FILTER_KEYS = ['q', 'league', 'season', 'phase', 'team', 'fav', 'torrent', 'dl', 'sort'];
+const FILTER_KEYS = ['q', 'league', 'season', 'phase', 'team', 'new', 'fav', 'torrent', 'dl', 'sort'];
 const PAGE = 48;
 
 let filters = readHash();
-let offset = 0, total = 0, loading = false, lastMonth = null, teamFacets = [];
+let offset = 0, total = 0, loading = false, lastMonth = null, teamFacets = [], stats = {};
 
 // ---------- helpers ----------
 function readHash() {
@@ -31,12 +24,6 @@ function query(extra = {}) {
   for (const [k, v] of Object.entries(extra)) p.set(k, v);
   return p.toString();
 }
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  const body = await r.json();
-  if (!r.ok && r.status !== 409) throw new Error(body.error || r.statusText);
-  return body;
-}
 function abbr(name) {
   if (!name) return '';
   const words = name.replace(/[^\p{L}\p{N}' ]/gu, ' ').split(/\s+/).filter(Boolean);
@@ -49,32 +36,47 @@ const fmtDate = (d) => d
   ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
   : 'Unknown date';
 const monthLabel = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : 'Unknown date';
-function timeAgo(iso) {
-  if (!iso) return 'never';
-  const s = (Date.now() - new Date(iso)) / 1000;
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return `${Math.round(s / 86400)} d ago`;
-}
 const imgSrc = (u) => `/img?u=${encodeURIComponent(u)}`;
-function specs(g) {
+function specs(r) {
+  if (!r) return '';
   const out = [];
-  if (g.resolution) out.push(g.resolution.replace(/^1920x1080$/, '1080p').replace(/^1280x720$/, '720p'));
-  const fps = g.video_info?.match(/([\d.]+)\s*fps/i)?.[1];
+  if (r.resolution) out.push(r.resolution.replace(/^1920x1080$/, '1080p').replace(/^1280x720$/, '720p'));
+  const fps = r.video_info?.match(/([\d.]+)\s*fps/i)?.[1];
   if (fps) out.push(`${fps} fps`);
-  const lang = g.language?.trim();
+  const lang = r.language?.trim();
   if (lang) out.push(lang);
   return out.join(' · ');
 }
 
-// ---------- stats ----------
+let toastTimer;
+function toast(html, { ms = 7000 } = {}) {
+  const t = $('#toast');
+  t.innerHTML = html;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+// ---------- stats / new games ----------
 async function loadStats() {
-  const s = await api('/api/stats');
-  $('#stats').innerHTML = s.total
-    ? `<b>${s.total.toLocaleString()}</b> games · ${esc(s.first?.slice(0, 4))}–${esc(s.last?.slice(0, 4))} · last fetch ${timeAgo(s.lastSync)}`
-    : 'Library is empty — press <b>Fetch new games</b> to import';
-  return s;
+  stats = await api('/api/stats');
+  $('#stats').innerHTML = stats.total
+    ? `<b>${stats.total.toLocaleString()}</b> games${stats.new ? ` · <b class="new-count">${stats.new} new</b>` : ''} · last fetch ${timeAgo(stats.lastSync)}`
+    : 'Library is empty — press ↻ to fetch games';
+  $('#newCount').textContent = stats.new || '';
+  renderNewBanner();
+  return stats;
+}
+
+function renderNewBanner() {
+  const b = $('#newBanner');
+  if (!stats.new) { b.hidden = true; return; }
+  b.hidden = false;
+  b.innerHTML = filters.new
+    ? `<span>Showing <b>${stats.new} new game${stats.new === 1 ? '' : 's'}</b>. They stop being new when you watch them.</span>
+       <button class="btn" data-banner="all">Show all games</button><button class="btn" data-banner="seen">Mark all as seen</button>`
+    : `<span><b>${stats.new} new game${stats.new === 1 ? '' : 's'}</b> since you last looked.</span>
+       <button class="btn primary" data-banner="show">Show them</button><button class="btn" data-banner="seen">Mark all as seen</button>`;
 }
 
 // ---------- facets / sidebar ----------
@@ -120,7 +122,7 @@ function heading() {
   else if (filters.league) parts.push(filters.league);
   if (filters.season) parts.push(filters.season);
   if (filters.phase) parts.push(filters.phase);
-  $('#heading').textContent = parts.length ? parts.join(' · ') : (filters.fav ? 'Favorites' : 'All games');
+  $('#heading').textContent = parts.length ? parts.join(' · ') : filters.new ? 'New games' : filters.fav ? 'Favorites' : 'All games';
   const bits = [`${total.toLocaleString()} game${total === 1 ? '' : 's'}`];
   if (filters.q) bits.push(`matching “${filters.q}”`);
   if (filters.team && filters.league) bits.push(`in ${filters.league}`);
@@ -129,6 +131,14 @@ function heading() {
 
 function card(g) {
   const c = color(g.league);
+  const rels = g.releases ?? [];
+  const best = rels[0];
+  const playable = rels.some((r) => r.torrent_url);
+  const torrent = rels.find((r) => r.torrent_url);
+  const mega = rels.find((r) => r.mega_url);
+  const source = best && (best.detail_url || best.other_url);
+  const sourceCount = new Set(rels.map((r) => r.torrent_url || r.mega_url || r.id)).size;
+
   const poster = g.image_url
     ? `<img loading="lazy" src="${imgSrc(g.image_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerHTML:this.dataset.ph}))" data-ph="${esc(placeholderInner(g))}">`
     : `<div class="ph ${g.home_team ? '' : 'event'}">${placeholderInner(g)}</div>`;
@@ -141,16 +151,15 @@ function card(g) {
        </div>`
     : `<div class="matchup"><div class="row">${esc(g.title.replace(/\s*\d{1,2}\.\d{1,2}\.\d{0,4}\s*$/, ''))}</div></div>`;
 
-  const sp = specs(g);
-  const source = g.detail_url || g.other_url;
+  const sp = specs(torrent ?? best);
   const watched = g.watch_position && g.duration ? Math.min(100, (g.watch_position / g.duration) * 100) : 0;
   return `
-  <article class="card ${g.downloaded ? 'downloaded' : ''}" style="--c:${c}" data-id="${g.id}" title="${esc(g.title)}">
-    <div class="poster ${g.torrent_url ? 'playable' : ''}" ${g.torrent_url ? 'data-play' : ''}>
+  <article class="card ${g.downloaded ? 'downloaded' : ''} ${g.is_new ? 'is-new' : ''}" style="--c:${c}" data-id="${g.id}" title="${esc(g.title)}">
+    <div class="poster ${playable ? 'playable' : ''}" ${playable ? 'data-play' : ''}>
       ${poster}
-      ${g.torrent_url ? '<span class="play-hint">▶</span>' : ''}
+      ${playable ? '<span class="play-hint">▶</span>' : ''}
       ${watched ? `<div class="watched" title="Watched to ${Math.round(watched)}%"><span style="width:${watched}%"></span></div>` : ''}
-      <span class="badge">${esc(g.league)}</span>
+      <span class="badges"><span class="badge">${esc(g.league)}</span>${g.is_new ? '<span class="badge new">NEW</span>' : ''}</span>
       <div class="flags">
         <button class="flag fav ${g.favorite ? 'on' : ''}" data-toggle="favorite" title="Favorite">${g.favorite ? '★' : '☆'}</button>
         <button class="flag dl ${g.downloaded ? 'on' : ''}" data-toggle="downloaded" title="Mark as downloaded">${g.downloaded ? '✓' : '○'}</button>
@@ -163,16 +172,16 @@ function card(g) {
         ${g.phase ? `<span class="tag">${esc(g.phase)}</span>` : ''}
         ${g.season ? `<span>${esc(g.season)}</span>` : ''}
       </div>
-      ${sp ? `<div class="meta">${esc(sp)}</div>` : ''}
+      ${sp || sourceCount > 1 ? `<div class="meta">${esc(sp)}${sourceCount > 1 ? `<span class="tag" title="${esc(rels.map((r) => r.source_name).join(', '))}">${sourceCount} sources</span>` : ''}</div>` : ''}
       <div class="actions">
-        ${g.torrent_url
+        ${playable
           ? `<button class="btn primary" data-play>▶ ${watched ? 'Resume' : 'Play'}</button>
-             <a class="btn" href="${esc(g.torrent_url)}" download title="Download .torrent file">⬇</a>
-             ${g.mega_url ? `<a class="btn" href="${esc(g.mega_url)}" target="_blank" rel="noreferrer">Mega</a>` : ''}`
-          : g.mega_url
-            ? `<a class="btn primary" href="${esc(g.mega_url)}" target="_blank" rel="noreferrer" title="No torrent on the site for this game">Mega ↗</a>`
+             <a class="btn" href="${esc(torrent.torrent_url)}" download title="Download .torrent file">⬇</a>
+             ${mega ? `<a class="btn" href="${esc(mega.mega_url)}" target="_blank" rel="noreferrer">Mega</a>` : ''}`
+          : mega
+            ? `<a class="btn primary" href="${esc(mega.mega_url)}" target="_blank" rel="noreferrer" title="No torrent for this game">Mega ↗</a>`
             : `<span class="btn primary disabled">No download link</span>`}
-        ${source ? `<a class="btn" href="${esc(source)}" target="_blank" rel="noreferrer" title="Open on sport-video.org.ua">↗</a>` : ''}
+        ${source ? `<a class="btn" href="${esc(source)}" target="_blank" rel="noreferrer" title="Open on ${esc(best.source_name)}">↗</a>` : ''}
       </div>
     </div>
   </article>`;
@@ -223,24 +232,26 @@ async function loadGames(reset) {
   }
 }
 
-async function renderEmpty() {
+function renderEmpty() {
   const empty = $('#empty');
   if (total > 0) { empty.hidden = true; return; }
   empty.hidden = false;
   const anyFilter = FILTER_KEYS.some((k) => k !== 'sort' && filters[k]);
   empty.innerHTML = anyFilter
     ? `<h2>No games match these filters</h2><p>Try removing a filter or searching for something else.</p><button class="btn" data-reset>Reset filters</button>`
-    : `<h2>Your library is empty</h2><p>Fetch pulls the newest games from sport-video.org.ua in batches and saves them to your local SQLite database.<br>The first import walks the whole archive (~1,000 games) and takes a couple of minutes.</p><button class="btn primary" data-fetch>Fetch games now</button>`;
+    : `<h2>Your library is empty</h2><p>Fetching reads the sources newest-first in batches and saves the games to your local library.<br>The first import walks the whole archive and takes a couple of minutes.</p><button class="btn primary" data-fetch>Fetch games now</button>`;
 }
 
 async function refresh() {
   writeHash();
   syncControls();
+  renderNewBanner();
   await Promise.all([loadFacets(), loadGames(true)]);
 }
 
 function syncControls() {
   $('#q').value = filters.q;
+  $('#newOnly').checked = filters.new === '1';
   $('#fav').checked = filters.fav === '1';
   $('#torrent').checked = filters.torrent === '1';
   $('#dl').value = filters.dl;
@@ -253,58 +264,58 @@ function setFilter(patch) {
 }
 
 function updateCardAfterWatch(g) {
-  gameById.set(g.id, { ...gameById.get(g.id), watch_position: g.watch_position, duration: g.duration });
+  gameById.set(g.id, { ...gameById.get(g.id), ...g, is_new: 0 });
   const cardEl = document.querySelector(`.card[data-id="${g.id}"]`);
   if (cardEl) cardEl.outerHTML = card(gameById.get(g.id));
+  loadStats();
 }
 
-// ---------- sync ----------
-let pollTimer = null;
-async function startSync(mode) {
-  const batchSize = Number($('#batchSize').value) || 10;
-  localStorage.setItem('batchSize', batchSize);
-  const s = await api('/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, batchSize }) });
-  showSync(s);
-  poll();
+// ---------- fetching ----------
+// One loop follows the server's fetch status (startup fetches, scheduled ones, manual ones).
+let syncState = null, syncTimer = null, lastAdded = 0, lastLive = 0;
+
+async function syncLoop() {
+  clearTimeout(syncTimer);
+  const s = await api('/api/sync').catch(() => null);
+  if (s) onSync(s);
+  syncTimer = setTimeout(syncLoop, s?.running ? 700 : 4000);
 }
-function poll() {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => {
-    const s = await api('/api/sync');
-    showSync(s);
-    if (s.running) {
-      poll();
-      // Show new games as they arrive, but don't reshuffle the grid under someone who has scrolled down.
-      if (s.added !== showSync.lastAdded && Date.now() - (showSync.lastRefresh ?? 0) > 3000) {
-        showSync.lastAdded = s.added;
-        showSync.lastRefresh = Date.now();
-        loadStats();
-        if (window.scrollY < 300) refresh();
-      }
-    } else {
-      await loadStats();
-      refresh();
+
+function onSync(s) {
+  const wasRunning = syncState?.running;
+  const isNewRun = syncState && s.startedAt !== syncState.startedAt;
+  syncState = s;
+  $('#quickFetch').classList.toggle('spinning', !!s.running);
+  $('#quickFetch').title = s.running ? 'Fetching… (open settings for the log)' : 'Fetch new games';
+  updateSyncStatus(s);
+  if (s.running) {
+    // Show new games as they arrive, without reshuffling the grid under someone who scrolled down.
+    if (s.added !== lastAdded && Date.now() - lastLive > 3000) {
+      lastAdded = s.added;
+      lastLive = Date.now();
+      loadStats();
+      if (window.scrollY < 300) refresh();
     }
-  }, 700);
+  } else if (wasRunning || (isNewRun && s.finishedAt)) {
+    finished(s);
+  }
 }
-function showSync(s) {
-  const panel = $('#syncPanel');
-  panel.hidden = false;
-  $('#fetchBtn').disabled = s.running;
-  $('#syncSpinner').className = `spinner ${s.running ? '' : s.error ? 'fail' : 'done'}`;
-  $('#syncTitle').textContent = s.running
-    ? (s.mode === 'full' ? 'Full rescan in progress…' : 'Fetching new games…')
-    : (s.result || 'Done');
-  $('#syncCounters').innerHTML = `
-    <span>Pages read <b>${s.pages}</b></span>
-    <span>Links checked <b>${s.scanned}</b></span>
-    <span>Batches <b>${s.batches}</b></span>
-    <span>Added <b>${s.added}</b></span>
-    <span>Ignored <b>${s.ignored ?? 0}</b></span>`;
-  const log = $('#syncLog');
-  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
-  log.textContent = s.log.join('\n');
-  if (atBottom) log.scrollTop = log.scrollHeight;
+
+function finished(s) {
+  lastAdded = 0;
+  loadStats();
+  refresh();
+  const quiet = s.trigger !== 'manual';
+  if (s.error) toast(`<b>Fetch failed.</b> ${esc(s.error)} <button class="link" data-toast="settings">Details</button>`);
+  else if (s.added) toast(`<b>${s.added} new game${s.added === 1 ? '' : 's'}</b> added. <button class="link" data-toast="new">Show</button>`);
+  else if (s.linksAdded) toast(`${s.linksAdded} new link${s.linksAdded === 1 ? '' : 's'} for games you already had.`);
+  else if (!quiet) toast('Up to date: no new games.', { ms: 3000 });
+}
+
+async function startFetch(opts = {}) {
+  const s = await send('/api/sync', 'POST', opts);
+  onSync(s);
+  syncLoop();
 }
 
 // ---------- events ----------
@@ -328,6 +339,7 @@ $('#teams').addEventListener('click', (e) => {
   if (li) { $('#teamSearch').value = ''; setFilter({ team: li.dataset.team }); closeSidebar(); }
 });
 $('#teamSelected').addEventListener('click', (e) => { if (e.target.closest('[data-clear-team]')) setFilter({ team: '' }); });
+$('#newOnly').addEventListener('change', (e) => setFilter({ new: e.target.checked ? '1' : '' }));
 $('#fav').addEventListener('change', (e) => setFilter({ fav: e.target.checked ? '1' : '' }));
 $('#torrent').addEventListener('change', (e) => setFilter({ torrent: e.target.checked ? '1' : '' }));
 $('#dl').addEventListener('change', (e) => setFilter({ dl: e.target.value }));
@@ -335,6 +347,23 @@ $('#sort').addEventListener('change', (e) => setFilter({ sort: e.target.value ==
 const resetAll = () => { $('#teamSearch').value = ''; setFilter(Object.fromEntries(FILTER_KEYS.map((k) => [k, '']))); };
 $('#reset').addEventListener('click', resetAll);
 $('.brand').addEventListener('click', (e) => { e.preventDefault(); resetAll(); });
+
+$('#newBanner').addEventListener('click', async (e) => {
+  const a = e.target.closest('[data-banner]')?.dataset.banner;
+  if (a === 'show') setFilter({ new: '1' });
+  if (a === 'all') setFilter({ new: '' });
+  if (a === 'seen') {
+    await send('/api/games/seen', 'POST');
+    await loadStats();
+    setFilter({ new: '' });
+  }
+});
+$('#toast').addEventListener('click', (e) => {
+  const a = e.target.closest('[data-toast]')?.dataset.toast;
+  if (a === 'new') setFilter({ new: '1' });
+  if (a === 'settings') openSettings('fetch');
+  if (a) $('#toast').hidden = true;
+});
 
 $('#results').addEventListener('click', async (e) => {
   const play = e.target.closest('[data-play]');
@@ -350,7 +379,7 @@ $('#results').addEventListener('click', async (e) => {
     const cardEl = t.closest('.card');
     const field = t.dataset.toggle;
     const on = !t.classList.contains('on');
-    const g = await api(`/api/games/${cardEl.dataset.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: on }) });
+    const g = await send(`/api/games/${cardEl.dataset.id}`, 'PATCH', { [field]: on });
     t.classList.toggle('on', on);
     t.textContent = field === 'favorite' ? (on ? '★' : '☆') : (on ? '✓' : '○');
     cardEl.classList.toggle('downloaded', !!g.downloaded);
@@ -358,23 +387,17 @@ $('#results').addEventListener('click', async (e) => {
 });
 $('#empty').addEventListener('click', (e) => {
   if (e.target.closest('[data-reset]')) resetAll();
-  if (e.target.closest('[data-fetch]')) startSync('incremental');
+  if (e.target.closest('[data-fetch]')) startFetch();
 });
 
-$('#fetchBtn').addEventListener('click', () => startSync('incremental'));
-$('#moreBtn').addEventListener('click', (e) => { e.stopPropagation(); $('#morePop').hidden = !$('#morePop').hidden; });
-document.addEventListener('click', () => { $('#morePop').hidden = true; });
-$('#morePop').addEventListener('click', async (e) => {
-  const b = e.target.closest('[data-action]');
-  if (!b) return;
-  if (b.dataset.action === 'full') startSync('full');
-  if (b.dataset.action === 'reclassify') {
-    const r = await api('/api/reclassify', { method: 'POST' });
-    showSync({ running: false, result: `Reclassified ${r.updated} games.`, pages: 0, scanned: 0, batches: 0, added: 0, log: [] });
-    refresh();
-  }
+$('#quickFetch').addEventListener('click', () => {
+  if (syncState?.running) openSettings('fetch');
+  else startFetch();
 });
-$('#syncClose').addEventListener('click', () => { $('#syncPanel').hidden = true; });
+initSettings({
+  onFetch: (opts) => startFetch(opts),
+  onChanged: () => { loadStats(); refresh(); },
+});
 
 function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').hidden = true; }
 $('#filtersToggle').addEventListener('click', () => { $('#sidebar').classList.add('open'); $('#scrim').hidden = false; });
@@ -387,9 +410,7 @@ new IntersectionObserver((entries) => {
 }, { rootMargin: '600px' }).observe($('#sentinel'));
 
 // ---------- boot ----------
-try { $('#batchSize').value = localStorage.getItem('batchSize') || 10; } catch {}
 await loadStats();
 await refresh();
-const s = await api('/api/sync');
-if (s.running) { showSync(s); poll(); }
+syncLoop();
 setInterval(loadStats, 60000);
