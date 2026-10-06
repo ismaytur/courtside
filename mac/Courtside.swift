@@ -35,11 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
         return cfg
     }()
-    private let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Courtside")
+    // COURTSIDE_SUPPORT_DIR / COURTSIDE_REPO_URL override the defaults (for testing a build).
+    private let env = ProcessInfo.processInfo.environment
+    private lazy var supportDir: URL = env["COURTSIDE_SUPPORT_DIR"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Courtside")
     private var repoDir: URL { supportDir.appendingPathComponent("repo") }
-    private let logURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/Courtside.log")
+    private var repoURL: String { env["COURTSIDE_REPO_URL"] ?? config.repoURL }
+    private lazy var logURL: URL = env["COURTSIDE_SUPPORT_DIR"] != nil
+        ? supportDir.appendingPathComponent("Courtside.log")
+        : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Courtside.log")
 
     // MARK: lifecycle
 
@@ -90,10 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             showStatus("Downloading Courtside from GitHub…")
             try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
             try? fm.removeItem(at: repoDir)
-            let (ok, output) = run("/usr/bin/env", ["git", "clone", "--branch", "main", config.repoURL, repoDir.path])
+            let (ok, output) = run("/usr/bin/env", ["git", "clone", "--branch", "main", repoURL, repoDir.path])
             log(output)
             if !ok {
-                showError("Couldn't clone \(config.repoURL).", detail: output)
+                showError("Couldn't clone \(repoURL).", detail: output)
                 return
             }
         }
@@ -314,6 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private func openLog() {
         let fm = FileManager.default
         try? fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
         if let size = (try? fm.attributesOfItem(atPath: logURL.path))?[.size] as? Int, size > 5_000_000 {
             try? fm.removeItem(at: logURL)
         }
