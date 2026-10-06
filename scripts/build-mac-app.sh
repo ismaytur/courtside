@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="dist/Courtside.app"
+APP="${APP_OUT:-dist/Courtside.app}"
 NODE="$(command -v node)" || { echo "node not found on PATH"; exit 1; }
 GIT="$(command -v git)" || { echo "git not found on PATH"; exit 1; }
 FFMPEG="$(command -v ffmpeg || true)"

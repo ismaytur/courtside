@@ -62,9 +62,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "Courtside"
+        window.title = "Courtside" // still used by the Window menu and Mission Control
+        // No title text: the page header already says Courtside, and on some macOS versions the
+        // title was drawn over the close/minimize/zoom buttons. The title bar takes the page's
+        // background color (style.css --bg) so window and page read as one surface.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         window.minSize = NSSize(width: 720, height: 480)
-        window.backgroundColor = NSColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1)
+        window.backgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 0x0d / 255, green: 0x0f / 255, blue: 0x12 / 255, alpha: 1)
+                : NSColor(red: 0xf4 / 255, green: 0xf2 / 255, blue: 0xee / 255, alpha: 1)
+        }
         window.collectionBehavior = [.fullScreenPrimary]
         window.contentView = webView
         window.center()
@@ -201,10 +210,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private static func page(body: String) -> String {
         """
         <!doctype html><meta charset="utf-8"><style>
-        html,body{margin:0;height:100%;background:#0d0f12;color:#e8ebf0;font:14px -apple-system,sans-serif}
+        html,body{margin:0;height:100%;background:#f4f2ee;color:#1d1b18;font:14px -apple-system,sans-serif}
+        @media (prefers-color-scheme: dark){html,body{background:#0d0f12;color:#e8ebf0}pre{background:#151920!important;border-color:#262c37!important;color:#8b93a1!important}}
         body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;box-sizing:border-box}
         a{color:#f26b1d} h2{margin:0;font-size:18px} p{margin:0;color:#8b93a1}
-        pre{max-width:900px;max-height:50vh;overflow:auto;background:#151920;border:1px solid #262c37;border-radius:10px;padding:12px;font:12px ui-monospace,monospace;color:#8b93a1;white-space:pre-wrap}
+        pre{max-width:900px;max-height:50vh;overflow:auto;background:#fff;border:1px solid #e4e0d8;border-radius:10px;padding:12px;font:12px ui-monospace,monospace;color:#6e685f;white-space:pre-wrap}
         .spinner{width:28px;height:28px;border-radius:50%;border:3px solid #262c37;border-top-color:#f26b1d;animation:s .8s linear infinite}
         @keyframes s{to{transform:rotate(360deg)}}
         </style>\(body)
