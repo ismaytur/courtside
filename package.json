@@ -8,7 +8,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node --no-warnings=ExperimentalWarning server.mjs"
+    "start": "node --no-warnings=ExperimentalWarning server.mjs",
+    "prune": "node --no-warnings=ExperimentalWarning scripts/prune.mjs"
   },
   "dependencies": {
     "webtorrent": "^2.8.5"

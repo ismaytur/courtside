@@ -26,6 +26,27 @@ The very first import walks the whole archive (`basketball.html` … `basketball
 1,000 games). If it gets interrupted, the next fetch resumes instead of stopping at the top.
 **⋯ → Full rescan** walks everything again and adds anything missing.
 
+## Choosing leagues (`config.json`)
+
+```json
+{
+  "leagues": {
+    "fetch": ["NBA", "EuroLeague", "International"],
+    "ignore": ["WNBA", "NCAA", "Other"]
+  }
+}
+```
+
+League names are `NBA`, `WNBA`, `EuroLeague`, `NCAA`, `International` and `Other`.
+
+- **Fetch** skips games in `ignore` leagues: they're never saved and their pages aren't opened.
+  A league in neither list is fetched, and the sync log says so. The file is read on every fetch,
+  so edits apply without a restart.
+- **`npm run prune`** shows how many saved games (and their posters, `.torrent` files and streamed
+  videos) belong to `ignore` leagues; `npm run prune -- --yes` deletes them.
+- Moving a league from `ignore` to `fetch` later: run **⋯ → Full rescan** to pick up its older games
+  (a normal fetch stops at the first game you already have).
+
 ## Classification
 
 The site only has a title per game (`Las Vegas Aces at Golden State Valkyries 04.10.2026`), so

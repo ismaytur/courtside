@@ -299,7 +299,8 @@ function showSync(s) {
     <span>Pages read <b>${s.pages}</b></span>
     <span>Links checked <b>${s.scanned}</b></span>
     <span>Batches <b>${s.batches}</b></span>
-    <span>Added <b>${s.added}</b></span>`;
+    <span>Added <b>${s.added}</b></span>
+    <span>Ignored <b>${s.ignored ?? 0}</b></span>`;
   const log = $('#syncLog');
   const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
   log.textContent = s.log.join('\n');
