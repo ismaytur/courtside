@@ -31,5 +31,6 @@ one dependency (webtorrent). Read these before larger changes:
 ```bash
 npm start                 # server on :4321 using ~/.courtside
 npm run build:app         # dist/Courtside.app (APP_OUT=… to build elsewhere)
+scripts/install-mac.sh    # needs Homebrew → Brewfile (node, ffmpeg), build, /Applications
 npm run prune [-- --yes]  # remove games of ignored leagues
 ```

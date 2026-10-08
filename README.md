@@ -115,11 +115,21 @@ minutes after you close the player.
 
 ## Mac app
 
+With [Homebrew](https://brew.sh) installed, one command installs the rest and puts the app in
+Applications:
+
 ```bash
-npm run build:app    # -> dist/Courtside.app (needs Xcode or its Command Line Tools)
+curl -fsSL https://raw.githubusercontent.com/ismaytur/courtside/main/scripts/install-mac.sh | bash
+# or, from a clone: ./scripts/install-mac.sh
 ```
 
-Drag `dist/Courtside.app` to Applications. No Apple developer account is needed; it's signed
+It stops with a message if Homebrew is missing (Homebrew's installer also brings the Xcode
+Command Line Tools and git). Otherwise it installs Node and ffmpeg from the [`Brewfile`](Brewfile),
+builds the app, copies it to `/Applications` and opens it. The app downloads its code and runs
+`npm ci` on first launch, so that needs internet. Re-running is safe: it upgrades Node/ffmpeg and replaces the app.
+
+If the tools are already there, `npm run build:app` builds `dist/Courtside.app` to drag to
+Applications yourself. No Apple developer account is needed; it's signed
 locally for this Mac. It's a native window around the web app that runs from its **own clone**
 of this repo in `~/Library/Application Support/Courtside/repo`, using the same `~/.courtside`:
 
@@ -131,6 +141,6 @@ of this repo in `~/Library/Application Support/Courtside/repo`, using the same `
   **View → Open in Browser** opens the library there too; **View → Show Log** shows
   `~/Library/Logs/Courtside.log`.
 
-Rebuild the app only when `mac/Courtside.swift` changes or Node moves (its path is recorded at
-build time). Everything else updates itself from GitHub: develop in a separate clone (like this
+Rebuild the app (re-run the installer) only when `mac/Courtside.swift` changes or Node moves
+(its path is recorded at build time). Everything else updates itself from GitHub: develop in a separate clone (like this
 folder), push to `main`, and the app picks it up.

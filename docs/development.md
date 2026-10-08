@@ -8,13 +8,14 @@ npm start                   # http://localhost:4321, uses ~/.courtside
 ```
 
 Needs Node 22.13+ (`node:sqlite`), ffmpeg/ffprobe on PATH, and Xcode (or its Command Line Tools)
-only for building the Mac app. There's no build step: edit and reload. Server changes
+only for building the Mac app. On a Mac, `brew bundle` installs Node and ffmpeg from the
+`Brewfile`; `scripts/install-mac.sh` does that plus the app build/install (it requires Homebrew, it doesn't install it). There's no build step: edit and reload. Server changes
 (`server.mjs`, `lib/`) need a restart; `public/` files are served from disk.
 
 **Pushing to `main` deploys to the Mac app.** It checks GitHub on launch, every 30 minutes, and
 via Settings → Updates, then restarts itself into the new code. Rebuild the app
-(`npm run build:app`) only when `mac/Courtside.swift` or `scripts/build-mac-app.sh` change, or
-Node moves. Because the app does `git reset --hard origin/main`, never keep anything it needs
+(`npm run build:app`, or `scripts/install-mac.sh` to also install it) only when
+`mac/Courtside.swift` or `scripts/build-mac-app.sh` change, or Node moves. Because the app does `git reset --hard origin/main`, never keep anything it needs
 in its clone; local state belongs in `~/.courtside`.
 
 ## Testing without touching the real library
