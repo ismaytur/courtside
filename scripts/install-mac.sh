@@ -1,9 +1,11 @@
 #!/bin/bash
 # One step from a Mac with Homebrew to /Applications/Courtside.app:
 #   1. check Homebrew (https://brew.sh; it also installs the Xcode Command Line Tools and git)
-#   2. the Brewfile (node, ffmpeg)
-#   3. scripts/build-mac-app.sh, then the app is copied to /Applications and opened
-# Safe to re-run: it skips what's there, upgrades the Brewfile tools, and replaces the app.
+#   2. the Brewfile (ffmpeg)
+#   3. scripts/build-mac-app.sh (downloads Node into the app), then the app is copied to
+#      /Applications and opened. The Mac itself needs no Node.
+# Safe to re-run: it skips what's there, upgrades ffmpeg, bundles the newest Node of the .nvmrc
+# line, and replaces the app.
 #
 # From a clone:     ./scripts/install-mac.sh
 # Without a clone:  curl -fsSL https://raw.githubusercontent.com/ismaytur/courtside/main/scripts/install-mac.sh | bash
@@ -53,10 +55,9 @@ main() {
   fi
 
   # ---- 3. Tools ------------------------------------------------------------------
-  step "Installing Node and ffmpeg (brew bundle)"
+  step "Installing ffmpeg (brew bundle)"
   brew bundle --file="$SRC/Brewfile"
-  # Build with Homebrew's node even if nvm & co. are on PATH: the app records this path and
-  # Homebrew's /opt/homebrew/bin/node keeps working across upgrades.
+  # The build records where ffmpeg lives; make sure it finds Homebrew's.
   export PATH="$(brew --prefix)/bin:$PATH"
 
   # ---- 4. Build and install ----------------------------------------------------------
@@ -77,7 +78,7 @@ main() {
 
   open "$DEST"
   printf '\n\033[32mDone.\033[0m Courtside is in %s and updates itself from GitHub.\n' "$DEST_DIR"
-  echo "Run this again only after changes to mac/ or the build script, or to upgrade Node/ffmpeg."
+  echo "Run this again after changes to mac/, the build script or .nvmrc, or to update Node."
 }
 
 main "$@"

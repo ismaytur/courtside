@@ -4,8 +4,8 @@ A local library of basketball games collected from torrent/filesharing listing s
 <https://www.sport-video.org.ua/basketball.html>), browsable by league, season, stage and team,
 with a built-in torrent player.
 
-Needs Node 22.13+ (built-in `node:sqlite`) and `ffmpeg` on the PATH for in-browser playback
-(`brew install ffmpeg`).
+Needs Node 22.13+ (built-in `node:sqlite`; `.nvmrc` has the version the Mac app bundles) and
+`ffmpeg` on the PATH for in-browser playback (`brew install ffmpeg`).
 
 ```bash
 npm install          # webtorrent, for streaming
@@ -124,14 +124,18 @@ curl -fsSL https://raw.githubusercontent.com/ismaytur/courtside/main/scripts/ins
 ```
 
 It stops with a message if Homebrew is missing (Homebrew's installer also brings the Xcode
-Command Line Tools and git). Otherwise it installs Node and ffmpeg from the [`Brewfile`](Brewfile),
-builds the app, copies it to `/Applications` and opens it. The app downloads its code and runs
-`npm ci` on first launch, so that needs internet. Re-running is safe: it upgrades Node/ffmpeg and replaces the app.
+Command Line Tools and git). Otherwise it installs ffmpeg from the [`Brewfile`](Brewfile), then
+builds the app with **Node bundled inside** (the official macOS build of the version line in
+[`.nvmrc`](.nvmrc), checksum-verified), copies it to `/Applications` and opens it. The Mac
+doesn't need its own Node. The app downloads its code and runs `npm ci` on first launch, so that
+needs internet. Re-running is safe: it upgrades ffmpeg, bundles the newest Node of that line, and
+replaces the app.
 
-If the tools are already there, `npm run build:app` builds `dist/Courtside.app` to drag to
-Applications yourself. No Apple developer account is needed; it's signed
-locally for this Mac. It's a native window around the web app that runs from its **own clone**
-of this repo in `~/Library/Application Support/Courtside/repo`, using the same `~/.courtside`:
+With ffmpeg already there, `npm run build:app` (or `bash scripts/build-mac-app.sh`) builds
+`dist/Courtside.app` to drag to Applications yourself. No Apple developer account is needed; it's
+signed locally for this Mac. It's a native window around the web app that runs from its **own
+clone** of this repo in `~/Library/Application Support/Courtside/repo`, using the same
+`~/.courtside`:
 
 - **On launch** it matches GitHub's `main` (GitHub always wins; your data isn't in git), runs
   `npm ci` if dependencies changed, and starts the server on a random port.
@@ -141,6 +145,6 @@ of this repo in `~/Library/Application Support/Courtside/repo`, using the same `
   **View → Open in Browser** opens the library there too; **View → Show Log** shows
   `~/Library/Logs/Courtside.log`.
 
-Rebuild the app (re-run the installer) only when `mac/Courtside.swift` changes or Node moves
-(its path is recorded at build time). Everything else updates itself from GitHub: develop in a separate clone (like this
+Rebuild the app (re-run the installer) only when `mac/Courtside.swift` or `.nvmrc` changes, or to
+update the bundled Node. Everything else updates itself from GitHub: develop in a separate clone (like this
 folder), push to `main`, and the app picks it up.

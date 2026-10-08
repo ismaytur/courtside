@@ -6,14 +6,14 @@
 // pulled); the page is reloaded when the new server is up. Quitting sends SIGTERM so the server can
 // commit and push unsaved data first.
 //
-// Built by scripts/build-mac-app.sh, which also writes Resources/launch.json (node path, PATH, repo URL).
+// Built by scripts/build-mac-app.sh, which bundles Node in Resources/node and writes
+// Resources/launch.json (PATH for git/ffmpeg, repo URL).
 
 import Cocoa
 import WebKit
 
 struct LaunchConfig: Decodable {
     let repoURL: String
-    let node: String
     let path: String
 }
 
@@ -41,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Courtside")
     private var repoDir: URL { supportDir.appendingPathComponent("repo") }
     private var repoURL: String { env["COURTSIDE_REPO_URL"] ?? config.repoURL }
+    // Node ships inside the app; its bin goes first on PATH so `npm` (and npm's `env node`) use it.
+    private let nodeBin = Bundle.main.resourceURL!.appendingPathComponent("node/bin")
+    private var nodePath: String { nodeBin.appendingPathComponent("node").path }
+    private var toolPath: String { nodeBin.path + ":" + config.path }
     private lazy var logURL: URL = env["COURTSIDE_SUPPORT_DIR"] != nil
         ? supportDir.appendingPathComponent("Courtside.log")
         : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Courtside.log")
@@ -115,11 +119,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func startServer() {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: config.node)
+        p.executableURL = URL(fileURLWithPath: nodePath)
         p.arguments = ["--no-warnings=ExperimentalWarning", "scripts/app.mjs"]
         p.currentDirectoryURL = repoDir
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = config.path
+        env["PATH"] = toolPath
         env["PORT"] = String(port) // 0 the first time (random); then the same port across restarts
         env["COURTSIDE_APP"] = "1"
         p.environment = env
@@ -140,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             try p.run()
             server = p
         } catch {
-            showError("Couldn't start Node at \(config.node).", detail: "\(error)\n\nRebuild the app with `npm run build:app` if Node moved.")
+            showError("Couldn't start the bundled Node at \(nodePath).", detail: "\(error)\n\nReinstall the app with scripts/install-mac.sh.")
         }
     }
 
@@ -345,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = config.path
+        env["PATH"] = toolPath
         env["GIT_TERMINAL_PROMPT"] = "0"
         p.environment = env
         let pipe = Pipe()

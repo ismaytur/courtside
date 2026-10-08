@@ -8,14 +8,16 @@ npm start                   # http://localhost:4321, uses ~/.courtside
 ```
 
 Needs Node 22.13+ (`node:sqlite`), ffmpeg/ffprobe on PATH, and Xcode (or its Command Line Tools)
-only for building the Mac app. On a Mac, `brew bundle` installs Node and ffmpeg from the
-`Brewfile`; `scripts/install-mac.sh` does that plus the app build/install (it requires Homebrew, it doesn't install it). There's no build step: edit and reload. Server changes
+only for building the Mac app. The Mac app bundles its own Node (`.nvmrc` sets the version line);
+`scripts/install-mac.sh` needs Homebrew, installs ffmpeg from the `Brewfile`, then builds and
+installs the app. There's no build step: edit and reload. Server changes
 (`server.mjs`, `lib/`) need a restart; `public/` files are served from disk.
 
 **Pushing to `main` deploys to the Mac app.** It checks GitHub on launch, every 30 minutes, and
 via Settings → Updates, then restarts itself into the new code. Rebuild the app
 (`npm run build:app`, or `scripts/install-mac.sh` to also install it) only when
-`mac/Courtside.swift` or `scripts/build-mac-app.sh` change, or Node moves. Because the app does `git reset --hard origin/main`, never keep anything it needs
+`mac/Courtside.swift`, `scripts/build-mac-app.sh` or `.nvmrc` change. Because the app does
+`git reset --hard origin/main`, never keep anything it needs
 in its clone; local state belongs in `~/.courtside`.
 
 ## Testing without touching the real library
@@ -93,5 +95,6 @@ clone: `COURTSIDE_HOME=… PORT=0 node scripts/app.mjs` (exit code 75 = restart 
 - **SQLite** runs in rollback-journal mode (no WAL) so `games.db` is always one complete file.
 - **WKWebView** needs `isElementFullscreenEnabled` for the player's fullscreen and an Edit menu for
   copy/paste. The window title is hidden (it overlapped the traffic-light buttons on newer macOS).
-- **GUI apps don't get your shell PATH**: the build script records node/git/ffmpeg locations.
-  Rebuild after `nvm` switches Node versions.
+- **GUI apps don't get your shell PATH**: the build script records git/ffmpeg locations, and the
+  app puts its bundled `Resources/node/bin` first, so `npm` and npm's `#!/usr/bin/env node` use
+  the bundled Node. Builds cache the Node download in `~/Library/Caches/Courtside`.
