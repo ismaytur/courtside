@@ -61,14 +61,16 @@ function savePosition() {
 // stream is fetched here and appended to a SourceBuffer (works the same in Chrome/Firefox).
 const MSE = window.MediaSource || window.ManagedMediaSource;
 const AHEAD_MAX = 120; // seconds buffered ahead before we stop reading (ffmpeg then waits too)
+const QUOTA_GIVE_UP = 30000; // ms the buffer may stay full with playback not moving before we fail
 const KEEP_BEHIND = 30; // seconds of already-played video kept for small rewinds
 let pipe = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Measured to the end of the last range, not the current one: audio/video often leave tiny gaps
+// between ranges, and stopping at the first gap made us think little was buffered and keep reading.
 const bufferedAhead = () => {
-  const b = el.video.buffered, t = el.video.currentTime;
-  for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.5 && t <= b.end(i)) return b.end(i) - t;
-  return 0;
+  const b = el.video.buffered;
+  return b.length ? Math.max(0, b.end(b.length - 1) - el.video.currentTime) : 0;
 };
 
 function stopPipe() {
@@ -81,7 +83,9 @@ function stopPipe() {
 
 function startMse(src, mime) {
   const ms = new MSE();
-  const p = { dead: false, ctrl: new AbortController(), url: URL.createObjectURL(ms) };
+  // aheadMax shrinks when the browser says its buffer is full (WebKit's limit is much lower than
+  // Chrome's and varies with memory pressure), so we learn the real budget instead of guessing it.
+  const p = { dead: false, ctrl: new AbortController(), url: URL.createObjectURL(ms), aheadMax: AHEAD_MAX };
   pipe = p;
   if (window.ManagedMediaSource && ms instanceof window.ManagedMediaSource) el.video.disableRemotePlayback = true;
   el.video.src = p.url;
@@ -94,12 +98,21 @@ function startMse(src, mime) {
       const b = el.video.buffered, t = el.video.currentTime;
       if (b.length && t - b.start(0) > keep + 5) { sb.remove(0, t - keep); await done(); }
     };
+    // A full buffer is backpressure, not an error: aim lower and wait for playback to free space.
+    // Only give up if it stays full while the video isn't moving (and isn't paused).
     const append = async (chunk) => {
-      for (let attempt = 0; ; attempt++) {
+      let lastT = el.video.currentTime, stuckSince = 0;
+      for (;;) {
         try { sb.appendBuffer(chunk); await done(); return; } catch (err) {
-          if (err.name !== 'QuotaExceededError' || attempt > 20) throw err;
-          await trim(5); // browser buffer full: drop more played video, or wait for playback to move on
-          await sleep(500);
+          if (err.name !== 'QuotaExceededError') throw err;
+          p.aheadMax = Math.max(15, Math.min(p.aheadMax, bufferedAhead() - 10));
+          await trim(5); // drop more played video
+          await sleep(1000);
+          if (p.dead) return;
+          const t = el.video.currentTime;
+          if (t !== lastT || el.video.paused) { lastT = t; stuckSince = 0; }
+          else if (!stuckSince) stuckSince = Date.now();
+          else if (Date.now() - stuckSince > QUOTA_GIVE_UP) throw err;
         }
       }
     };
@@ -111,7 +124,7 @@ function startMse(src, mime) {
     let first = true;
     try {
       while (!p.dead) {
-        while (!p.dead && bufferedAhead() > AHEAD_MAX) await sleep(500);
+        while (!p.dead && bufferedAhead() > p.aheadMax) await sleep(500);
         const { value, done: eof } = await reader.read();
         if (p.dead) return;
         if (eof) break;
