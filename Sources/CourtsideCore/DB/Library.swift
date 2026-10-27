@@ -24,6 +24,7 @@ public struct Game: Identifiable, Sendable, Hashable {
   public var favorite: Bool
   public var watchPosition: Double?
   public var duration: Double?
+  public var watchedAt: Date?        // last time it was played (cache cap: least recently watched go first)
   public var isNew: Bool
 }
 
@@ -168,7 +169,16 @@ public final class Library: @unchecked Sendable {
          away: r.string("away_abbr") ?? "", awayName: r.string("away_name") ?? "",
          topicURL: r.string("topic_url"), torrentURL: r.string("torrent_url"), resolution: r.string("resolution"),
          broadcast: r.string("broadcast"), favorite: r.int("favorite") == 1, watchPosition: r.double("watch_position"),
-         duration: r.double("duration"), isNew: r.int("is_new") == 1)
+         duration: r.double("duration"), watchedAt: r.string("watched_at").flatMap(sqliteDate), isNew: r.int("is_new") == 1)
+  }
+
+  /// SQLite's datetime('now'): "yyyy-MM-dd HH:mm:ss", UTC.
+  static func sqliteDate(_ s: String) -> Date? {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone(identifier: "UTC")
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return f.date(from: s)
   }
 
   // MARK: writing per game

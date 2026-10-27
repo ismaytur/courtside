@@ -3,7 +3,8 @@
 //
 //   { "leagues": { "nba": true },
 //     "sources": { "720pier": { "username": "…", "password": "…" } },
-//     "storage": { "cacheGB": 30, "uploadKBps": 256 } }
+//     "storage": { "cacheGB": 30, "uploadKBps": 256 },
+//     "playback": { "airplayLAN": true } }
 
 import Foundation
 
@@ -19,9 +20,17 @@ public struct Settings: Codable, Sendable, Equatable {
     public init() {}
   }
 
+  public struct Playback: Codable, Sendable, Equatable {
+    /// Serve the video on the home network, not just this Mac: AirPlay hands the stream's URL to
+    /// the Apple TV, which fetches it itself and can't reach 127.0.0.1.
+    public var airplayLAN = true
+    public init() {}
+  }
+
   public var leagues: [String: Bool] = [:]   // league id -> on; missing = on
   public var sources: [String: Account] = [:]
   public var storage = Storage()
+  public var playback = Playback()
 
   public init() {}
 
@@ -32,6 +41,7 @@ public struct Settings: Codable, Sendable, Equatable {
     leagues = (try? c.decodeIfPresent([String: Bool].self, forKey: .leagues)) ?? [:]
     sources = (try? c.decodeIfPresent([String: Account].self, forKey: .sources)) ?? [:]
     storage = (try? c.decodeIfPresent(Storage.self, forKey: .storage)) ?? Storage()
+    playback = (try? c.decodeIfPresent(Playback.self, forKey: .playback)) ?? Playback()
     storage.cacheGB = min(10_000, max(1, storage.cacheGB))
     storage.uploadKBps = min(1_000_000, max(0, storage.uploadKBps))
   }
@@ -62,5 +72,12 @@ extension Settings.Storage {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     cacheGB = (try? c.decodeIfPresent(Double.self, forKey: .cacheGB)) ?? 30
     uploadKBps = (try? c.decodeIfPresent(Double.self, forKey: .uploadKBps)) ?? 256
+  }
+}
+
+extension Settings.Playback {
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    airplayLAN = (try? c.decodeIfPresent(Bool.self, forKey: .airplayLAN)) ?? true
   }
 }

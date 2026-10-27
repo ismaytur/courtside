@@ -1,5 +1,6 @@
 // What the window shows: the library's games, the filters the sidebar sets, and the actions
-// (refresh, favorite, clear download). Everything it reads or writes lives in COURTSIDE_HOME.
+// (refresh, check 720pier, play, favorite, clear download). Everything it reads or writes lives in
+// COURTSIDE_HOME.
 
 import SwiftUI
 import AppKit
@@ -19,7 +20,21 @@ enum Scope: String, CaseIterable, Identifiable {
 }
 
 enum Status: String {
-  case upcoming = "Upcoming", notPosted = "Not posted yet", available = "Available", downloaded = "Downloaded"
+  case upcoming = "Upcoming", notPosted = "Not posted yet", available = "Available", downloading = "Downloading",
+       downloaded = "Downloaded"
+}
+
+/// What the player overlay shows, from "looking for the torrent" to the video itself.
+enum PlayStage {
+  case loading(String)
+  case choose(OpenGame, resume: WatchRules.Start?)   // resume / start over / part picker
+  case playing(GamePlayer)
+  case failed(String)
+}
+
+struct Playing {
+  let game: Game
+  var stage: PlayStage
 }
 
 /// Games of one day (or, in a series view, one series; `title` is then empty or the matchup).
@@ -47,9 +62,19 @@ final class AppModel {
   private(set) var games: [Game] = []
   private(set) var teams: [String: Team] = [:]       // "nba/ATL"
   private(set) var logoImages: [String: NSImage] = [:]
-  private(set) var downloaded: Set<String> = []
+  private(set) var downloaded: Set<String> = []        // complete downloads
+  private(set) var hasFiles: Set<String> = []          // anything on disk (complete or not)
+  private(set) var downloadProgress: [String: Double] = [:]   // games downloading now, 0…1
   private(set) var refreshing = false
+  private(set) var checkingPier = false
+  private(set) var now = Date()                        // ticks every minute: games start, Upcoming ends
   var message: String?                                 // shown in an alert
+  var pierNote: String?                                // why the automatic 720pier check didn't work
+  private(set) var playing: Playing?
+
+  @ObservationIgnored let engine: PlaybackEngine
+  @ObservationIgnored private var pierClient: (CourtsideCore.Settings.Account, Pier720)?
+  @ObservationIgnored private var playTask: Task<Void, Never>?
 
   var scope = Scope.all
   var league: String?
@@ -59,18 +84,46 @@ final class AppModel {
   var showLaterUpcoming = false
 
   init() {
-    settings = Settings.load(paths)
+    let loaded = Settings.load(paths)
+    settings = loaded
+    engine = PlaybackEngine(uploadKBps: loaded.storage.uploadKBps, lan: loaded.playback.airplayLAN)
     do { library = try Library(paths: paths) }
     catch { message = "Couldn't open the library: \(error.localizedDescription)" }
     reload()
     if season == nil { season = seasons.first }
+    engine.onComplete = { [weak self] _ in
+      Task { @MainActor in self?.reload(); self?.enforceCap() }
+    }
+    NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated { self?.closePlayer() }
+    }
   }
 
-  /// On launch: show what's stored, then refresh the schedule if it's due.
+  /// On launch: show what's stored, refresh the schedule if it's due (which also checks 720pier),
+  /// else just check 720pier for newly posted games.
   func start() async {
     guard let library else { return }
+    Task { await self.ticker() }
+    enforceCap()
+    // Tests (with a scratch COURTSIDE_HOME): press Play on this game at launch.
+    if let id = ProcessInfo.processInfo.environment["COURTSIDE_TEST_PLAY"], let g = library.game(id) { play(g) }
     let due = Leagues.all.contains { settings.isOn(league: $0.id) && ScheduleRefresh(library: library, settings: settings).isDue($0) }
-    if due { await refresh(force: false) }
+    if due { await refresh(force: false) } else { await checkPier(manual: false) }
+  }
+
+  /// Keeps `now` and the download percentages current.
+  private func ticker() async {
+    var n = 0
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      n += 1
+      if n % 30 == 0 { now = Date() }
+      var progress: [String: Double] = [:]
+      for id in engine.openIDs {
+        if let g = engine.game(id), g.torrent != nil, g.progress < 1 { progress[id] = g.progress }
+      }
+      if progress != downloadProgress { downloadProgress = progress }
+    }
   }
 
   // MARK: reading
@@ -79,7 +132,9 @@ final class AppModel {
     guard let library else { return }
     games = library.games().filter { settings.isOn(league: $0.league) }
     teams = Dictionary(uniqueKeysWithValues: Leagues.all.flatMap { library.teams(league: $0.id) }.map { ("\($0.league)/\($0.abbr)", $0) })
-    downloaded = Set(games.filter { FileManager.default.fileExists(atPath: paths.download(league: $0.league, game: $0.id).path) }.map(\.id))
+    let folders = games.map { ($0.id, folder($0)) }.filter { $0.1.exists }
+    hasFiles = Set(folders.map(\.0))
+    downloaded = Set(folders.filter { $0.1.isComplete }.map(\.0))
     loadLogos()
   }
 
@@ -105,13 +160,16 @@ final class AppModel {
     teams.values.filter { league == nil || $0.league == league }.sorted { $0.name < $1.name }
   }
 
-  func status(_ g: Game, now: Date = Date()) -> Status {
+  func folder(_ g: Game) -> GameFolder { GameFolder(paths: paths, league: g.league, game: g.id) }
+
+  func status(_ g: Game) -> Status {
     if downloaded.contains(g.id) { return .downloaded }
+    if downloadProgress[g.id] != nil { return .downloading }
     if isUpcoming(g, now: now) { return .upcoming }
     return g.topicURL == nil ? .notPosted : .available
   }
 
-  func isUpcoming(_ g: Game, now: Date = Date()) -> Bool {
+  func isUpcoming(_ g: Game, now: Date) -> Bool {
     if let start = g.start { return start > now }
     return g.date > Self.format(now, "yyyy-MM-dd")
   }
@@ -135,7 +193,7 @@ final class AppModel {
 
   /// The grid's content: "Upcoming" (next 7 days by day, the rest on request), then one block per
   /// month, newest first. A series stage instead gets one block per matchup.
-  func blocks(now: Date = Date()) -> [Block] {
+  func blocks() -> [Block] {
     let shown = filtered()
     if isSeriesView { return seriesBlocks(shown) }
     var out: [Block] = []
@@ -191,6 +249,152 @@ final class AppModel {
     if !result.errors.isEmpty { message = "Couldn't refresh everything:\n" + result.errors.joined(separator: "\n") }
     await Logos(paths: paths).fetchAll(Array(teams.values))
     loadLogos()
+    await checkPier(manual: false)
+  }
+
+  // MARK: 720pier
+
+  var hasPierAccount: Bool {
+    let a = settings.sources["720pier"] ?? CourtsideCore.Settings.Account()
+    return !a.username.isEmpty && !a.password.isEmpty
+  }
+
+  /// One client per account, so its sign-in is reused.
+  private func pier() -> Pier720 {
+    let account = settings.sources["720pier"] ?? CourtsideCore.Settings.Account()
+    if let (a, p) = pierClient, a == account { return p }
+    let p = Pier720(account: account)
+    pierClient = (account, p)
+    return p
+  }
+
+  /// Sign in and look for topics of the games played so far. The automatic run (after a refresh,
+  /// on launch) is quiet without an account and reports problems in a banner; the toolbar's
+  /// "Check 720pier" says what happened in an alert.
+  func checkPier(manual: Bool) async {
+    guard let library, !checkingPier, settings.isOn(league: "nba") else { return }
+    guard hasPierAccount else {
+      if manual { message = Self.explain(Pier720Error.noAccount) }
+      return
+    }
+    checkingPier = true
+    defer { checkingPier = false }
+    do {
+      let p = pier()
+      try await p.signIn()
+      let found = try await p.update(library: library, league: NBA())
+      pierNote = nil
+      reload()
+      if manual { message = found == 0 ? "No newly posted games on 720pier." : "Found \(found) newly posted game\(found == 1 ? "" : "s") on 720pier." }
+    } catch {
+      if manual { message = Self.explain(error) } else { pierNote = Self.explain(error) }
+    }
+  }
+
+  /// Plain-language reasons for what goes wrong with 720pier and playback.
+  static func explain(_ error: Error) -> String {
+    switch error {
+    case Pier720Error.noAccount:
+      return "Add your 720pier username and password in Settings (Courtside > Settings) to find and play games."
+    case Pier720Error.signInFailed:
+      return "720pier didn't sign you in. Check the username and password in Settings."
+    case let e as WebError where e.status == 403:
+      return "720pier refused the connection (403: it blocks programs). Courtside can't reach it right now."
+    case let e as WebError:
+      return "720pier answered with an error (HTTP \(e.status)). Try again later."
+    case let e as TorrentError:
+      return "The download couldn't start: \(e.description)."
+    case let e as LocalizedError where e.errorDescription != nil:
+      return e.errorDescription!
+    default:
+      return "Something went wrong: \(error.localizedDescription)"
+    }
+  }
+
+  // MARK: playing
+
+  func play(_ g: Game) {
+    guard playing == nil else { return }
+    playing = Playing(game: g, stage: .loading("Opening the game…"))
+    playTask = Task { await open(g) }
+  }
+
+  private func setStage(_ stage: PlayStage, for g: Game) {
+    guard playing?.game.id == g.id else { return }
+    playing?.stage = stage
+  }
+
+  private func open(_ g: Game) async {
+    guard let library else { return }
+    let folder = folder(g)
+    do {
+      var torrent: Data?
+      if !folder.isComplete, !FileManager.default.fileExists(atPath: folder.torrentFile.path) {
+        guard g.league == "nba" else { throw PlaybackError.notPosted }
+        guard hasPierAccount else { throw Pier720Error.noAccount }
+        if g.topicURL == nil { setStage(.loading("Looking for the game on 720pier…"), for: g) }
+        guard let topic = try await NBA.pierTopic(for: g, forum: pier(), library: library) else { throw PlaybackError.notPosted }
+        setStage(.loading("Getting the torrent from 720pier…"), for: g)
+        let data = try await pier().torrent(topic: topic)
+        // A signed-out answer is a web page, not a bencoded dictionary.
+        guard data.first == UInt8(ascii: "d") else {
+          throw Pier720Error.signInFailed
+        }
+        torrent = data
+      }
+      try Task.checkCancellation()
+      let open = try engine.open(id: g.id, folder: folder, torrentData: torrent)
+      reload()
+      enforceCap()
+      let fresh = library.game(g.id) ?? g
+      let resume = WatchRules.resume(position: fresh.watchPosition, duration: fresh.duration,
+                                     part: folder.state?.part ?? 0, parts: open.parts.count)
+      if resume != nil || open.parts.count > 1 {
+        setStage(.choose(open, resume: resume), for: g)
+      } else {
+        startPlayer(open, at: .beginning)
+      }
+    } catch is CancellationError {
+    } catch {
+      setStage(.failed(Self.explain(error)), for: g)
+    }
+  }
+
+  func startPlayer(_ open: OpenGame, at start: WatchRules.Start) {
+    guard let library, let p = playing else { return }
+    let player = GamePlayer(game: library.game(p.game.id) ?? p.game, open: open, engine: engine, library: library)
+    player.start(part: start.part, at: start.position)
+    playing?.stage = .playing(player)
+  }
+
+  /// Close the overlay; the position is saved and the download carries on.
+  func closePlayer() {
+    playTask?.cancel()
+    if case .playing(let player)? = playing?.stage { player.close() }
+    playing = nil
+    reload()
+  }
+
+  var playingID: String? { playing?.game.id }
+
+  // MARK: downloads
+
+  /// Delete what's on disk beyond the cap, least recently watched first; never the game playing.
+  func enforceCap() {
+    guard let library else { return }
+    let entries = library.games().compactMap { g -> DownloadCap.Entry? in
+      let f = folder(g)
+      guard f.exists else { return nil }
+      return DownloadCap.Entry(id: g.id, bytes: f.bytes, lastUsed: g.watchedAt ?? f.created)
+    }
+    let cap = Int64(settings.storage.cacheGB * 1_000_000_000)
+    let remove = DownloadCap.evictions(entries, capBytes: cap, keep: Set([playingID].compactMap { $0 }))
+    guard !remove.isEmpty else { return }
+    for id in remove {
+      engine.close(id)
+      if let g = library.game(id) { folder(g).delete() }
+    }
+    reload()
   }
 
   func toggleFavorite(_ g: Game) {
@@ -198,25 +402,29 @@ final class AppModel {
     reload()
   }
 
+  /// Stop the game's torrent and delete its folder (closing the player first if it's this game).
   func clearDownload(_ g: Game) {
-    try? FileManager.default.removeItem(at: paths.download(league: g.league, game: g.id))
+    if playingID == g.id { closePlayer() }
+    engine.close(g.id)
+    folder(g).delete()
     reload()
   }
 
   func clearAllDownloads() {
+    closePlayer()
+    engine.closeAll()
     for l in Leagues.all { try? FileManager.default.removeItem(at: paths.downloads(l.id)) }
     reload()
   }
 
-  /// The player comes in a later step.
-  func onPlay(_ g: Game) {
-    message = "Player coming soon"
-  }
-
   func update(_ change: (inout CourtsideCore.Settings) -> Void) {
+    let before = settings
     change(&settings)
     do { try settings.save(paths) } catch { message = "Couldn't save settings: \(error.localizedDescription)" }
+    if settings.storage.uploadKBps != before.storage.uploadKBps { engine.setUploadLimit(kbps: settings.storage.uploadKBps) }
+    if settings.playback.airplayLAN != before.playback.airplayLAN { engine.setLAN(settings.playback.airplayLAN) }
     reload()
+    if settings.storage.cacheGB < before.storage.cacheGB { enforceCap() }
   }
 
   // MARK: dates (game dates are US Eastern days)

@@ -4,6 +4,7 @@
 #include "TorrentBridge.h"
 
 #include <libtorrent/add_torrent_params.hpp>
+#include <libtorrent/address.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
@@ -79,6 +80,14 @@ tb_session *tb_session_new(const char *listen, int upload_bps, char *err, size_t
 
 void tb_session_free(tb_session *s) { delete s; }
 
+int tb_session_listen_port(tb_session *s) {
+  try {
+    return s->ses.listen_port();
+  } catch (...) {
+    return 0;
+  }
+}
+
 void tb_session_set_upload_limit(tb_session *s, int upload_bps) {
   try {
     lt::settings_pack p;
@@ -93,6 +102,11 @@ void tb_session_set_download_limit(tb_session *s, int download_bps) {
     lt::settings_pack p;
     p.set_int(lt::settings_pack::download_rate_limit, std::max(0, download_bps));
     s->ses.apply_settings(std::move(p));
+    // Peers on the local network (a test seeder on this Mac) are in their own, unlimited class;
+    // the cap is for tests, so it covers them too.
+    lt::peer_class_info local = s->ses.get_peer_class(lt::session::local_peer_class_id);
+    local.download_limit = std::max(0, download_bps);
+    s->ses.set_peer_class(lt::session::local_peer_class_id, local);
   } catch (...) {
   }
 }
@@ -108,6 +122,8 @@ int tb_session_poll(tb_session *s, int timeout_ms, tb_event_cb cb, void *ctx) {
         cb(ctx, TB_EVENT_PIECE_FINISHED, p->handle.id(), static_cast<int>(p->piece_index), "");
       } else if (auto *f = lt::alert_cast<lt::torrent_finished_alert>(a)) {
         cb(ctx, TB_EVENT_TORRENT_FINISHED, f->handle.id(), -1, "");
+      } else if (auto *c = lt::alert_cast<lt::torrent_checked_alert>(a)) {
+        cb(ctx, TB_EVENT_CHECKED, c->handle.id(), -1, "");
       } else if (auto *h = lt::alert_cast<lt::hash_failed_alert>(a)) {
         cb(ctx, TB_EVENT_HASH_FAILED, h->handle.id(), static_cast<int>(h->piece_index), "");
       } else if (auto *e = lt::alert_cast<lt::torrent_error_alert>(a)) {
@@ -205,6 +221,18 @@ int tb_file_range_pieces(const tb_torrent *t, int file, int64_t offset, int64_t 
   *first = static_cast<int>(start / plen);
   *last = static_cast<int>((start + length - 1) / plen);
   return 0;
+}
+
+int tb_connect_peer(tb_torrent *t, const char *ip, int port) {
+  try {
+    lt::error_code ec;
+    auto addr = lt::make_address(ip, ec);
+    if (ec) return -1;
+    t->h.connect_peer(lt::tcp::endpoint(addr, static_cast<std::uint16_t>(port)));
+    return 0;
+  } catch (...) {
+    return -1;
+  }
 }
 
 int tb_have_piece(const tb_torrent *t, int piece) {

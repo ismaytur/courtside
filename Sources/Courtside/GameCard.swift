@@ -53,15 +53,18 @@ struct GameCard: View {
         .overlay(alignment: .topTrailing) {
           if game.favorite { Image(systemName: "heart.fill").foregroundStyle(.white).padding(8) }
         }
+        .overlay(alignment: .bottom) {
+          if let p = watched { WatchedBar(fraction: p) }
+        }
       VStack(alignment: .leading, spacing: 4) {
         Text("\(shortName(game.away, game.awayName)) at \(shortName(game.home, game.homeName))")
           .font(.headline).lineLimit(1)
         Text(AppModel.shortDay(game.date)).font(.subheadline).foregroundStyle(.secondary)
         Text(stageText).font(.caption).foregroundStyle(.secondary)
         HStack {
-          Badge(status: status)
+          Badge(status: status, progress: model.downloadProgress[game.id])
           Spacer()
-          Button("Play") { model.onPlay(game) }
+          Button("Play") { model.play(game) }
             .controlSize(.small)
             .disabled(status == .upcoming)
         }
@@ -73,7 +76,7 @@ struct GameCard: View {
     .clipShape(RoundedRectangle(cornerRadius: 10))
     .contextMenu {
       Button(game.favorite ? "Remove from Favorites" : "Favorite") { model.toggleFavorite(game) }
-      Button("Clear download") { model.clearDownload(game) }.disabled(status != .downloaded)
+      Button("Clear download") { model.clearDownload(game) }.disabled(!model.hasFiles.contains(game.id))
     }
   }
 
@@ -81,16 +84,37 @@ struct GameCard: View {
     model.team(game.league, abbr)?.shortName ?? full
   }
 
+  /// How far it's been watched (0…1), when it has been started.
+  private var watched: Double? {
+    guard let p = game.watchPosition, let d = game.duration, d > 0, p >= WatchRules.minResume else { return nil }
+    return min(1, p / d)
+  }
+
   private var stageText: String {
     game.gameNumber.map { "\(game.stageLabel) · Game \($0)" } ?? game.stageLabel
   }
 }
 
+/// A thin red line along the poster's bottom edge, like a video app's "continue watching".
+struct WatchedBar: View {
+  let fraction: Double
+  var body: some View {
+    GeometryReader { geo in
+      ZStack(alignment: .leading) {
+        Rectangle().fill(.black.opacity(0.35))
+        Rectangle().fill(.red).frame(width: geo.size.width * fraction)
+      }
+    }
+    .frame(height: 4)
+  }
+}
+
 struct Badge: View {
   let status: Status
+  var progress: Double?
 
   var body: some View {
-    Text(status.rawValue)
+    Text(progress.map { "\(status.rawValue) \(Int($0 * 100))%" } ?? status.rawValue)
       .font(.caption.weight(.semibold))
       .padding(.horizontal, 8).padding(.vertical, 3)
       .background(color.opacity(0.18), in: Capsule())
@@ -102,6 +126,7 @@ struct Badge: View {
     case .upcoming: .secondary
     case .notPosted: .orange
     case .available: .blue
+    case .downloading: .teal
     case .downloaded: .green
     }
   }

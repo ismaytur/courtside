@@ -18,6 +18,14 @@ struct SettingsView: View {
         TextField("Username", text: account(\.username))
         SecureField("Password", text: account(\.password))
       }
+      Section {
+        Toggle("Allow AirPlay to Apple TV (serve on home network)", isOn: Binding(
+          get: { model.settings.playback.airplayLAN },
+          set: { on in model.update { $0.playback.airplayLAN = on } }))
+      } header: { Text("Playback") } footer: {
+        Text("An Apple TV fetches the video from this Mac itself, so the video is offered to your home network while it plays. Turn off to keep it on this Mac only.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
       Section("Storage") {
         TextField("Keep up to (GB)", value: Binding(
           get: { model.settings.storage.cacheGB },
@@ -34,7 +42,7 @@ struct SettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .frame(width: 460, height: 440)
+    .frame(width: 480, height: 560)
   }
 
   private func account(_ key: WritableKeyPath<CourtsideCore.Settings.Account, String>) -> Binding<String> {

@@ -276,11 +276,11 @@ extension Pier720 {
     return out
   }
 
-  /// Read pages newest-first until every wanted game is found, or two pages in a row have nothing
-  /// newer than the oldest missing game (the forum is sorted by last reply, so one old page can be
-  /// a fluke), or the pages run out, or `maxPages`.
+  /// Read pages newest-first until every wanted game is found, or `olderPages` pages in a row have
+  /// nothing newer than the oldest missing game (the forum is sorted by last reply, so one old page
+  /// can be a fluke), or the pages run out, or `maxPages`.
   public nonisolated static func find(
-    wanted: [Wanted], names: TeamNames, maxPages: Int = 80, loadPage: (Int) async throws -> [Listing]
+    wanted: [Wanted], names: TeamNames, maxPages: Int = 80, olderPages: Int = 2, loadPage: (Int) async throws -> [Listing]
   ) async throws -> [String: Listing] {
     var missing = wanted, found: [String: Listing] = [:], older = 0
     for page in 0..<maxPages {
@@ -291,7 +291,7 @@ extension Pier720 {
       found.merge(hits) { a, _ in a }
       missing.removeAll { hits[$0.id] != nil }
       older = newest < oldest ? older + 1 : 0
-      if older >= 2 { break }
+      if older >= olderPages { break }
     }
     return found
   }

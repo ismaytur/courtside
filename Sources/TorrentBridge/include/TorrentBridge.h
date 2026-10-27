@@ -24,13 +24,15 @@ typedef struct tb_torrent tb_torrent;
 tb_session *tb_session_new(const char *listen, int upload_bps, char *err, size_t errlen);
 void tb_session_free(tb_session *s);
 void tb_session_set_upload_limit(tb_session *s, int upload_bps);
-void tb_session_set_download_limit(tb_session *s, int download_bps);  // 0 = unlimited
+void tb_session_set_download_limit(tb_session *s, int download_bps);  // 0 = unlimited; applies to local peers too
+int tb_session_listen_port(tb_session *s);  // the TCP port peers connect to (0 if not listening)
 
 enum {
   TB_EVENT_PIECE_FINISHED = 1,  // piece = the piece that passed its hash check
   TB_EVENT_TORRENT_FINISHED = 2,  // all wanted pieces are here
   TB_EVENT_ERROR = 3,  // torrent or file error; message says what
   TB_EVENT_HASH_FAILED = 4,  // piece failed its hash check (will be re-downloaded)
+  TB_EVENT_CHECKED = 5,  // data already on disk was checked (no piece events for those pieces)
 };
 typedef void (*tb_event_cb)(void *ctx, int kind, uint32_t torrent_id, int piece, const char *message);
 
@@ -64,6 +66,8 @@ void tb_file_priority(tb_torrent *t, int file, int priority);
 /// Pieces covering [offset, offset+length) of a file. Returns 0, or -1 for an empty/out-of-range span.
 int tb_file_range_pieces(const tb_torrent *t, int file, int64_t offset, int64_t length, int *first, int *last);
 int tb_have_piece(const tb_torrent *t, int piece);
+/// Connect to a peer directly (e.g. a seeder on this Mac, without a tracker). 0, or -1 for a bad address.
+int tb_connect_peer(tb_torrent *t, const char *ip, int port);
 /// Ask for these pieces first, in order, each wanted within deadline_ms (+ step per piece).
 void tb_set_deadlines(tb_torrent *t, int first, int last, int deadline_ms, int step_ms);
 void tb_clear_deadlines(tb_torrent *t);

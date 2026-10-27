@@ -50,6 +50,9 @@ public final class TorrentSession: @unchecked Sendable {
 
   deinit { tb_session_free(handle) }
 
+  /// The port peers connect to (useful with listenPort 0).
+  public var listenPort: Int { Int(tb_session_listen_port(handle)) }
+
   public func setUploadLimit(kbps: Double) {
     tb_session_set_upload_limit(handle, Self.bps(kbps))
   }
@@ -96,6 +99,8 @@ public final class TorrentSession: @unchecked Sendable {
     guard let t else { return }
     switch Int(kind) {
     case Int(TB_EVENT_PIECE_FINISHED): t.pieceFinished(Int(piece))
+    case Int(TB_EVENT_CHECKED): t.checked()
+    case Int(TB_EVENT_TORRENT_FINISHED): t.onFinished?()
     case Int(TB_EVENT_ERROR): t.failed(message)
     default: break
     }

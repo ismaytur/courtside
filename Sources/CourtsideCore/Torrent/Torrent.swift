@@ -39,6 +39,13 @@ public final class Torrent: @unchecked Sendable {
   private var waiters: [Int: [CheckedContinuation<Void, Error>]] = [:]  // piece -> waiting tasks
   private var error: String?
 
+  /// Called (on the event thread) when every selected file is downloaded.
+  public var onFinished: (@Sendable () -> Void)? {
+    get { lock.withLock { finishedHandler } }
+    set { lock.withLock { finishedHandler = newValue } }
+  }
+  private var finishedHandler: (@Sendable () -> Void)?
+
   init(session: TorrentSession, handle: OpaquePointer, folder: URL) {
     self.session = session
     ptr = handle
@@ -142,6 +149,28 @@ public final class Torrent: @unchecked Sendable {
   func pieceFinished(_ piece: Int) {
     let ws = lock.withLock { waiters.removeValue(forKey: piece) ?? [] }
     for w in ws { w.resume() }
+  }
+
+  /// libtorrent checked the data already on disk. Pieces found there don't get piece events, so
+  /// wake whoever waits for one of them.
+  func checked() {
+    let ready = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
+      guard let p = ptr else { return [] }
+      let have = waiters.keys.filter { tb_have_piece(p, Int32($0)) != 0 }
+      return have.flatMap { waiters.removeValue(forKey: $0) ?? [] }
+    }
+    for w in ready { w.resume() }
+  }
+
+  /// Connect to a peer directly (a seeder on this Mac in tests: no tracker needed).
+  public func connect(peer host: String, port: Int) {
+    with { p in _ = tb_connect_peer(p, host, Int32(port)) }
+  }
+
+  /// Whether every byte of these files is downloaded and verified.
+  public func isComplete(_ files: [TorrentFile]) -> Bool {
+    let done = fileProgress()
+    return !files.isEmpty && files.allSatisfy { $0.index < done.count && done[$0.index] >= $0.size }
   }
 
   func failed(_ message: String) {

@@ -28,23 +28,47 @@ extension NBA {
   }
 }
 
-extension Pier720 {
-  /// Look for topics of the NBA games played so far and record them. Returns how many were found.
-  /// The torrent link is resolved later (`torrent(topic:)`), when the game is actually downloaded.
-  @discardableResult
-  public func update(library: Library, league: NBA, now: Date = Date()) async throws -> Int {
-    let wanted = NBA.pierMissing(library, now: now)
-    guard !wanted.isEmpty else { return 0 }
+/// What the NBA glue needs from 720pier; Pier720 in the app, a fake in tests.
+public protocol PierForum: Sendable {
+  func signIn() async throws
+  func listing(forum: Int, page: Int) async throws -> [Listing]
+  func newestSubforum(prefix: String) async throws -> Int?
+  func torrent(topic: URL) async throws -> Data
+}
+
+extension Pier720: PierForum {}
+
+extension NBA {
+  /// Look for topics of these games and record them. Returns game id -> listing.
+  static func pierFind(_ wanted: [Wanted], forum: some PierForum, library: Library, olderPages: Int = 2) async throws -> [String: Listing] {
+    guard !wanted.isEmpty else { return [:] }
     var forums = [Pier720.nbaForum]
-    if let playoffs = try await newestSubforum(prefix: "NBA Playoffs") { forums.append(playoffs) }
-    let found = try await Pier720.find(wanted: wanted, names: NBA.pierNames(library)) { page in
+    if let playoffs = try await forum.newestSubforum(prefix: "NBA Playoffs") { forums.append(playoffs) }
+    let found = try await Pier720.find(wanted: wanted, names: pierNames(library), olderPages: olderPages) { page in
       var all: [Listing] = []
-      for forum in forums { all += try await self.listing(forum: forum, page: page) }
+      for f in forums { all += try await forum.listing(forum: f, page: page) }
       return all
     }
     for (gameID, l) in found {
       library.setFound(gameID, topicURL: l.topicURL, torrentURL: nil, resolution: l.resolution, broadcast: l.broadcast)
     }
-    return found.count
+    return found
+  }
+
+  /// The topic of one game, for Play: the stored one, else a deeper look than the availability
+  /// check (it gives up only after four pages older than the game). Nil when it isn't posted.
+  public static func pierTopic(for game: Game, forum: some PierForum, library: Library) async throws -> URL? {
+    if let t = game.topicURL, let url = URL(string: t) { return url }
+    let found = try await pierFind([Wanted(game)], forum: forum, library: library, olderPages: 4)
+    return found[game.id].flatMap { URL(string: $0.topicURL) }
+  }
+}
+
+extension Pier720 {
+  /// Look for topics of the NBA games played so far and record them. Returns how many were found.
+  /// The torrent link is resolved later (`torrent(topic:)`), when the game is actually downloaded.
+  @discardableResult
+  public func update(library: Library, league: NBA, now: Date = Date()) async throws -> Int {
+    try await NBA.pierFind(NBA.pierMissing(library, now: now), forum: self, library: library).count
   }
 }

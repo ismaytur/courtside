@@ -36,6 +36,8 @@ let package = Package(
     .executableTarget(name: "Courtside", dependencies: ["CourtsideCore"]),
     // Step-0 prototype: a torrent streamed through ffmpeg into AVPlayer (see its main.swift).
     .executableTarget(name: "Prototype", dependencies: ["CourtsideCore"]),
+    // End-to-end check of Play: a torrent seeded on this Mac, played, seeked, closed, resumed.
+    .executableTarget(name: "PlayCheck", dependencies: ["CourtsideCore"]),
     .testTarget(name: "CourtsideCoreTests", dependencies: ["CourtsideCore"], resources: [.copy("Fixtures")]),
   ],
   swiftLanguageModes: [.v5],
