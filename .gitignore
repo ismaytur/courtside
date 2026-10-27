@@ -26,3 +26,12 @@ data/
 
 # Built Mac app
 dist/
+
+# Claude Code ctags index
+.claude/tags
+
+# Swift build output and vendored native builds
+.build/
+.mise/
+vendor/build/
+vendor/src/
