@@ -20,7 +20,7 @@ public final class MediaStream: @unchecked Sendable {
   /// How ffmpeg/ffprobe read the source: StreamServer's /raw URL (waits for torrent pieces).
   var input: String = ""
   public var readahead = 2
-  public var log: @Sendable (String) -> Void = { _ in }
+  public var log: @Sendable (String) -> Void = { Log.info("media", $0) }
 
   private let lock = NSLock()
   private var playlistTask: Task<HLSPlaylist, Error>?
@@ -99,6 +99,7 @@ public final class MediaStream: @unchecked Sendable {
     for seg in pl.segments[i...min(i + readahead, pl.segments.count - 1)] where segmentTasks[seg.index] == nil {
       segmentTasks[seg.index] = Task {
         do { return try await self.make(seg, in: pl) } catch {
+          Log.error("media", "segment \(seg.index) failed: \(error.localizedDescription)")
           self.lock.withLock { self.segmentTasks[seg.index] = nil }  // retry on the next request
           throw error
         }

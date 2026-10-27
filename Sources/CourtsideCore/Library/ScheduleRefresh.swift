@@ -28,7 +28,10 @@ public struct ScheduleRefresh: Sendable {
     var result = Result()
     for league in Leagues.all where settings.isOn(league: league.id) && (force || isDue(league, now: now)) {
       do { result.added += try await refresh(league, now: now) }
-      catch { result.errors.append("\(league.name): \(error.localizedDescription)") }
+      catch {
+        Log.error("schedule", "\(league.name) refresh failed: \(error.localizedDescription)")
+        result.errors.append("\(league.name): \(error.localizedDescription)")
+      }
     }
     return result
   }
@@ -48,6 +51,7 @@ public struct ScheduleRefresh: Sendable {
     let added = try library.saveSchedule(games, markNew: library.meta(seen) != nil)
     library.setMeta(seen, "1")
     library.setMeta(Self.key(league.id), String(now.timeIntervalSince1970))
+    Log.info("schedule", "\(league.name) \(season): \(teams.count) teams, \(games.count) games, \(added) new")
     return added
   }
 }

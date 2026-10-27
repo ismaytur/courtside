@@ -296,7 +296,9 @@ final class AppModel {
     switch error {
     case Pier720Error.noAccount:
       return "Add your 720pier username and password in Settings (Courtside > Settings) to find and play games."
-    case Pier720Error.signInFailed:
+    case Pier720Error.signInFailed(let said?):
+      return "720pier didn't sign you in: \(said)"
+    case Pier720Error.signInFailed(nil):
       return "720pier didn't sign you in. Check the username and password in Settings."
     case let e as WebError where e.status == 403:
       return "720pier refused the connection (403: it blocks programs). Courtside can't reach it right now."
@@ -338,7 +340,8 @@ final class AppModel {
         let data = try await pier().torrent(topic: topic)
         // A signed-out answer is a web page, not a bencoded dictionary.
         guard data.first == UInt8(ascii: "d") else {
-          throw Pier720Error.signInFailed
+          Log.warn("720pier", "the torrent download returned a web page, not a .torrent — page says: \(Log.snippet(String(decoding: data, as: UTF8.self)))")
+          throw Pier720Error.signInFailed(nil)
         }
         torrent = data
       }

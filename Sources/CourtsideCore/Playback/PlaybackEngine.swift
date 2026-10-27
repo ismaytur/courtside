@@ -37,7 +37,7 @@ public final class PlaybackEngine: @unchecked Sendable {
   private var games: [String: OpenGame] = [:]
   private var uploadKBps: Double
   private var lan: Bool
-  public var log: @Sendable (String) -> Void = { _ in }
+  public var log: @Sendable (String) -> Void = { Log.info("playback", $0) }
   /// A game finished downloading (called on the torrent event thread).
   public var onComplete: (@Sendable (String) -> Void)?
 
@@ -99,6 +99,7 @@ public final class PlaybackEngine: @unchecked Sendable {
   /// game.torrent) to the session. Already open: the same object.
   public func open(id: String, folder: GameFolder, torrentData: Data?) throws -> OpenGame {
     if let g = game(id) { return g }
+    Log.info("playback", "open \(id) (\(torrentData != nil ? "new torrent" : "from its folder"))")
     if let state = folder.state, state.complete, !state.parts.isEmpty,
        state.parts.allSatisfy({ FileManager.default.fileExists(atPath: folder.file($0).path) }) {
       let g = OpenGame(id: id, folder: folder, parts: state.parts, torrent: nil, files: [])
@@ -132,6 +133,7 @@ public final class PlaybackEngine: @unchecked Sendable {
 
   /// The HLS URL of one part; builds its keyframe index first (waits for the bytes that needs).
   public func play(_ g: OpenGame, part: Int) async throws -> PlayableURL {
+    Log.info("playback", "play \(g.id) part \(part + 1) of \(g.parts.count)")
     let server = try await streamServer()
     let stream = try lock.withLock { () -> MediaStream in
       if let s = g.streams[part] { return s }

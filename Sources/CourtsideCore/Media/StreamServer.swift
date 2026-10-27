@@ -11,7 +11,7 @@ import Network
 public final class StreamServer: @unchecked Sendable {
   public let lan: Bool
   public private(set) var port: UInt16 = 0
-  public var log: @Sendable (String) -> Void = { _ in }
+  public var log: @Sendable (String) -> Void = { Log.debug("server", $0) }
 
   private let listener: NWListener
   private let queue = DispatchQueue(label: "courtside.stream-server", attributes: .concurrent)

@@ -69,6 +69,10 @@ extension Pier720 {
   /// The torrent link is resolved later (`torrent(topic:)`), when the game is actually downloaded.
   @discardableResult
   public func update(library: Library, league: NBA, now: Date = Date()) async throws -> Int {
-    try await NBA.pierFind(NBA.pierMissing(library, now: now), forum: self, library: library).count
+    let missing = NBA.pierMissing(library, now: now)
+    Log.info("720pier", "finder: \(missing.count) played games without a topic")
+    let found = try await NBA.pierFind(missing, forum: self, library: library).count
+    Log.info("720pier", "finder: found \(found)")
+    return found
   }
 }

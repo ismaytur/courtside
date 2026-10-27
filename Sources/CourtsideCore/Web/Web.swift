@@ -13,16 +13,39 @@ public enum Web {
   /// `fetch` with retries: a thrown error (no answer) or a 5xx is tried again, 0.8 s, 1.6 s, …
   public static func send(_ request: WebRequest, retries: Int = 2) async throws -> WebResponse {
     for attempt in 0... {
+      let started = Date()
       do {
         let res = try await fetch(request)
+        logResponse(request, res, ms: Int(Date().timeIntervalSince(started) * 1000))
         if res.status >= 500, attempt < retries { try await pause(attempt); continue }
         return res
       } catch {
+        Log.warn("web", "\(request.method) \(describe(request.url)) failed: \(error.localizedDescription)")
         if attempt >= retries || error is CancellationError { throw error }
         try await pause(attempt)
       }
     }
     fatalError("unreachable")
+  }
+
+  /// One line per request: method, host + path (redacted query), status, redirect, size, time.
+  /// Errors and every 720pier answer are INFO or above; routine 2xx (ESPN, logos) are DEBUG.
+  static func logResponse(_ req: WebRequest, _ res: WebResponse, ms: Int) {
+    var line = "\(req.method) \(describe(req.url)) → \(res.status), \(res.body.count / 1024) KB, \(ms) ms"
+    if res.url.absoluteString != req.url.absoluteString { line += ", ended at \(describe(res.url))" }
+    let isPier = req.url.host?.contains("720pier") ?? false
+    if res.status >= 400 {
+      Log.warn("web", line + " — page says: " + Log.snippet(String(decoding: res.body, as: UTF8.self)))
+    } else if isPier {
+      Log.info("web", line)
+    } else {
+      Log.debug("web", line)
+    }
+  }
+
+  static func describe(_ url: URL) -> String {
+    let query = url.query.map { "?\($0)" } ?? ""
+    return "\(url.host ?? "")\(url.path)\(query)"
   }
 
   /// GET as bytes; nil on 404, throws on other errors.

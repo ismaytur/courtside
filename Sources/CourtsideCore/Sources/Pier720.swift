@@ -27,12 +27,13 @@ public struct LoginForm: Sendable, Equatable {
 }
 
 public enum Pier720Error: LocalizedError {
-  case noAccount, signInFailed, pageMissing(URL), noAttachment
+  case noAccount, signInFailed(String?), pageMissing(URL), noAttachment
 
   public var errorDescription: String? {
     switch self {
     case .noAccount: "Enter your 720pier username and password in Settings."
-    case .signInFailed: "720pier didn't accept the username and password."
+    case .signInFailed(let said?): "720pier didn't sign you in: \(said)"
+    case .signInFailed(nil): "720pier didn't accept the username and password."
     case .pageMissing(let url): "720pier page not found: \(url.path)"
     case .noAttachment: "This 720pier topic has no torrent attachment."
     }
@@ -78,19 +79,46 @@ public actor Pier720: Source {
 
   public func signIn() async throws {
     guard !account.username.isEmpty, !account.password.isEmpty else { throw Pier720Error.noAccount }
+    Log.info("720pier", "sign-in: start (username set, password set)")
     let loginURL = Self.url("ucp.php?mode=login")
-    guard let page = try await Web.text(loginURL), var form = Self.parseLoginForm(page, base: loginURL) else {
+    guard let page = try await Web.text(loginURL) else { throw Pier720Error.pageMissing(loginURL) }
+    if Self.isSignedIn(page) {
+      Log.info("720pier", "sign-in: already signed in (logout link on the login page)")
+      signedIn = true; return
+    }
+    guard var form = Self.parseLoginForm(page, base: loginURL) else {
+      Log.warn("720pier", "sign-in: no login form on the login page — page says: \(Log.snippet(page))")
       throw Pier720Error.pageMissing(loginURL)
     }
-    if Self.isSignedIn(page) { signedIn = true; return }
+    Log.info("720pier", "sign-in: form found, posts to \(Web.describe(form.action)), fields: \(form.fields.keys.sorted().joined(separator: ", "))")
     form.fields["username"] = account.username
     form.fields["password"] = account.password
     form.fields["autologin"] = "on"
     let res = try await Web.postForm(form.action, form.fields, headers: ["Referer": loginURL.absoluteString])
+    let answer = String(decoding: res.body, as: UTF8.self)
+    let said = Self.parseError(answer)
+    Log.info("720pier", "sign-in: posted → \(res.status), ended at \(Web.describe(res.url)), logout link: \(Self.isSignedIn(answer) ? "yes" : "no")"
+      + (said.map { ", forum says: \($0)" } ?? ""))
+    if let said, !Self.isSignedIn(answer) {
+      Log.warn("720pier", "sign-in: rejected — \(said)")
+      throw Pier720Error.signInFailed(said)
+    }
     // The answer is a redirect or a "you have been logged in" page; the home page tells for sure.
-    let home = try await Web.text(Self.url("index.php")) ?? String(decoding: res.body, as: UTF8.self)
-    guard Self.isSignedIn(home) else { throw Pier720Error.signInFailed }
+    let home = try await Web.text(Self.url("index.php")) ?? answer
+    guard Self.isSignedIn(home) else {
+      Log.warn("720pier", "sign-in: home page still shows a guest — post answer says: \(Log.snippet(answer))")
+      throw Pier720Error.signInFailed(nil)
+    }
+    Log.info("720pier", "sign-in: done")
     signedIn = true
+  }
+
+  /// phpBB's message for a failed form (wrong password, too many attempts, form expired), shown in
+  /// an element with class "error" on the login page it sends back.
+  public nonisolated static func parseError(_ html: String) -> String? {
+    guard let m = html.firstMatch(of: #/class="[^"]*\berror\b[^"]*"[^>]*>([\s\S]*?)</(?:div|p|span|dd)>/#) else { return nil }
+    let text = Log.snippet(String(m.1), limit: 200)
+    return text.isEmpty ? nil : text
   }
 
   // MARK: torrent
@@ -101,11 +129,15 @@ public actor Pier720: Source {
     if !signedIn { try await signIn() }
     var html = try await topicHTML(topic)
     if html.contains(Self.guestNotice) {
+      Log.info("720pier", "topic shows the guest notice; signing in again")
       signedIn = false
       try await signIn()
       html = try await topicHTML(topic)
     }
-    guard let url = Self.parseAttachment(html, base: topic) else { throw Pier720Error.noAttachment }
+    guard let url = Self.parseAttachment(html, base: topic) else {
+      Log.warn("720pier", "no torrent attachment on \(Web.describe(topic)) — page says: \(Log.snippet(html))")
+      throw Pier720Error.noAttachment
+    }
     return url
   }
 
