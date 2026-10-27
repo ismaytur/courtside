@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.ismaytur.courtside</string>
+  <key>CFBundleName</key><string>Courtside</string>
+  <key>CFBundleDisplayName</key><string>Courtside</string>
+  <key>CFBundleExecutable</key><string>Courtside</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@BUILD@</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.sports</string>
+  <!-- Games stream from a small server on this Mac, and AirPlay devices fetch them over the home network. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Courtside shares the game you're watching with AirPlay devices on your home network.</string>
+</dict>
+</plist>

@@ -2,7 +2,8 @@
 # nothing goes into Homebrew or the system.
 #
 #   mise run vendor   download + build libtorrent and ffmpeg into vendor/ (pinned, checksummed)
-#   mise run build    swift build (runs vendor first if it hasn't been)
+#   mise run build    dist/Courtside.app, self-contained (runs vendor first if needed)
+#   mise run install  build, then copy to /Applications
 #   mise run test     swift test
 #   mise run prototype -- --torrent <file|url> [--lan]   the step-0 streaming prototype
 
@@ -15,7 +16,16 @@ description = "Download and build libtorrent + ffmpeg into vendor/"
 run = "scripts/vendor/all.sh"
 
 [tasks.build]
-description = "Build the Swift package"
+description = "Build dist/Courtside.app (APP_OUT=<path> to build elsewhere)"
+run = "scripts/build-app.sh"
+
+[tasks.install]
+description = "Build the app, then copy it to /Applications (quits a running Courtside)"
+depends = ["build"]
+run = "scripts/install-app.sh"
+
+[tasks.compile]
+description = "Debug build of the Swift package (no app bundle)"
 run = ["scripts/vendor/all.sh --if-missing", "swift build"]
 
 [tasks.test]
