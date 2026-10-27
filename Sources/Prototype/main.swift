@@ -109,7 +109,7 @@ func setUp() async throws -> (URL, MediaStream, Torrent?) {
     } else {
       data = try Data(contentsOf: URL(fileURLWithPath: (t as NSString).expandingTildeInPath))
     }
-    let session = try TorrentSession(listenPort: 0, uploadKBps: Settings.load(Paths()).storage.uploadKBps)
+    let session = try TorrentSession(listenPort: 0, uploadKBps: Settings.load(Paths(home: home)).storage.uploadKBps)
     session.setDownloadLimit(kbps: opts.downloadKBps)
     keep.append(session)
     let tor = try session.add(torrent: data, saveTo: work.appendingPathComponent("downloads"))
