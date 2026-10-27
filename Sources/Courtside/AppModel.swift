@@ -49,7 +49,6 @@ struct Block: Identifiable {
   let id: String
   let title: String
   let days: [DayGroup]
-  var laterCount = 0     // upcoming games past the next 7 days (hidden until asked for)
 }
 
 enum Dimension { case league, season, stage, team }
@@ -81,7 +80,11 @@ final class AppModel {
   var season: String?
   var stage: String?
   var team: String?
-  var showLaterUpcoming = false
+  // The timeline shows a window of game days, oldest first: [windowFirst, windowLast]. It opens at
+  // the first day with games still to come and grows by `step` days at either end as you scroll.
+  private(set) var windowFirst: String?
+  private(set) var windowLast: String?
+  static let step = 5
 
   init() {
     let loaded = Settings.load(paths)
@@ -135,8 +138,12 @@ final class AppModel {
     let folders = games.map { ($0.id, folder($0)) }.filter { $0.1.exists }
     hasFiles = Set(folders.map(\.0))
     downloaded = Set(folders.filter { $0.1.isComplete }.map(\.0))
+    if windowFirst == nil { resetTimeline() }   // first load; later reloads keep where you are
     loadLogos()
   }
+
+  /// What the filters are set to; the timeline re-opens when it changes.
+  var filterKey: String { "\(scope.rawValue)|\(league ?? "")|\(season ?? "")|\(stage ?? "")|\(team ?? "")" }
 
   private func loadLogos() {
     for (key, team) in teams where logoImages[key] == nil {
@@ -191,26 +198,56 @@ final class AppModel {
     filtered(ignoring: dim).reduce(into: [:]) { $0[key($1), default: 0] += 1 }
   }
 
-  /// The grid's content: "Upcoming" (next 7 days by day, the rest on request), then one block per
-  /// month, newest first. A series stage instead gets one block per matchup.
-  func blocks() -> [Block] {
-    let shown = filtered()
-    if isSeriesView { return seriesBlocks(shown) }
-    var out: [Block] = []
-    let upcoming = shown.filter { isUpcoming($0, now: now) }
-      .sorted { ($0.start ?? .distantFuture, $0.id) < ($1.start ?? .distantFuture, $1.id) }
-    if !upcoming.isEmpty {
-      let weekOut = Self.format(now.addingTimeInterval(7 * 86400), "yyyy-MM-dd")
-      let near = upcoming.filter { $0.date <= weekOut }
-      let later = upcoming.count - near.count
-      out.append(Block(id: "upcoming", title: "Upcoming", days: dayGroups(showLaterUpcoming ? upcoming : near, now: now, newestFirst: false), laterCount: later))
+  /// Series stages: one block per matchup (the timeline doesn't apply).
+  func seriesView() -> [Block] { seriesBlocks(filtered()) }
+
+  /// Every game day after the filters, oldest first.
+  func gameDays() -> [String] { Array(Set(filtered().map(\.date))).sorted() }
+
+  /// The first day with a game still to come (by start time), else the last day there is.
+  func anchorDay(_ days: [String]) -> String? {
+    let upcoming = Set(filtered().filter { isUpcoming($0, now: now) }.map(\.date))
+    return days.first(where: upcoming.contains) ?? days.last
+  }
+
+  /// Back to the opening position: the anchor day and the `step - 1` game days after it.
+  func resetTimeline(to day: String? = nil) {
+    let days = gameDays()
+    guard let start = day.flatMap({ d in days.first { $0 >= d } }) ?? anchorDay(days), let i = days.firstIndex(of: start) else {
+      windowFirst = nil; windowLast = nil; return
     }
-    let past = shown.filter { !isUpcoming($0, now: now) }
-    let months = Dictionary(grouping: past, by: { String($0.date.prefix(7)) })
-    for month in months.keys.sorted(by: >) {
-      out.append(Block(id: "m-\(month)", title: Self.monthTitle(month), days: dayGroups(months[month]!, now: now, newestFirst: true)))
-    }
-    return out
+    windowFirst = days[i]
+    windowLast = days[min(days.count - 1, i + Self.step - 1)]
+  }
+
+  /// Indices of the window in `days`, opening it if it isn't set or no longer fits the filters.
+  private func window(_ days: [String]) -> ClosedRange<Int>? {
+    guard let f = windowFirst, let l = windowLast,
+          let lo = days.firstIndex(where: { $0 >= f }), let hi = days.lastIndex(where: { $0 <= l }), lo <= hi else { return nil }
+    return lo...hi
+  }
+
+  var canLoadEarlier: Bool { let d = gameDays(); return window(d).map { $0.lowerBound > 0 } ?? false }
+  var canLoadLater: Bool { let d = gameDays(); return window(d).map { $0.upperBound < d.count - 1 } ?? false }
+
+  func loadEarlier() {
+    let days = gameDays()
+    guard let w = window(days), w.lowerBound > 0 else { return }
+    windowFirst = days[max(0, w.lowerBound - Self.step)]
+  }
+
+  func loadLater() {
+    let days = gameDays()
+    guard let w = window(days), w.upperBound < days.count - 1 else { return }
+    windowLast = days[min(days.count - 1, w.upperBound + Self.step)]
+  }
+
+  /// The loaded days, oldest first.
+  func timeline() -> [DayGroup] {
+    let days = gameDays()
+    guard let w = window(days) else { return [] }
+    let shown = Set(days[w])
+    return dayGroups(filtered().filter { shown.contains($0.date) }, now: now, newestFirst: false)
   }
 
   private func dayGroups(_ games: [Game], now: Date, newestFirst: Bool) -> [DayGroup] {

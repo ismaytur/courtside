@@ -112,6 +112,7 @@ struct Sidebar: View {
 
 struct GameGrid: View {
   var model: AppModel
+  @State private var lastPrepend = Date.distantPast
 
   /// Lazy stacks only estimate the height of rows they haven't drawn yet, so the first scroll can land
   /// short; a second one, once the rows in between exist, lands exactly.
@@ -122,9 +123,13 @@ struct GameGrid: View {
   }
 
   var body: some View {
-    let blocks = model.blocks()
-    let count = model.filtered().count   // same as the sidebar, including upcoming games not shown yet
-    let monthBlocks: [Block] = model.isSeriesView ? [] : blocks
+    let series = model.isSeriesView
+    let sections = series ? flat(model.seriesView()) : timelineSections(model.timeline())
+    let count = model.filtered().count   // same as the sidebar
+    let months = series ? [] : monthStarts(model.gameDays())
+    GeometryReader { geo in
+    // Cards are 240–320 wide with 16 between, inside 20 of padding each side.
+    let columns = max(1, Int((geo.size.width - 40 + 16) / (256)))
     ScrollViewReader { proxy in
       ScrollView {
         if let note = model.pierNote {
@@ -138,79 +143,128 @@ struct GameGrid: View {
           .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
           .padding(.horizontal, 20).padding(.top, 12)
         }
-        if blocks.isEmpty {
+        if sections.isEmpty {
           ContentUnavailableView(model.refreshing ? "Loading the schedule…" : "No games here",
                                  systemImage: "sportscourt",
                                  description: Text(model.refreshing ? "This takes a few seconds the first time." : "Try other filters, or refresh the schedule."))
             .padding(.top, 120)
         } else {
           LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-            ForEach(flat(blocks)) { DaySection(model: model, section: $0) }
+            // Reaching the top loads the 5 game days before; the day you were looking at stays put.
+            if !series && model.canLoadEarlier {
+              ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(8)
+                .onAppear {
+                  guard Date().timeIntervalSince(lastPrepend) > 0.5, let keep = sections.first?.id else { return }
+                  lastPrepend = Date()
+                  model.loadEarlier()
+                  Task { @MainActor in
+                    // Twice: the first pass lands on estimated heights of the new days above.
+                    for _ in 0..<2 {
+                      var t = Transaction(); t.disablesAnimations = true
+                      withTransaction(t) { proxy.scrollTo(keep, anchor: .top) }
+                      try? await Task.sleep(nanoseconds: 120_000_000)
+                    }
+                  }
+                }
+            }
+            ForEach(sections) { DaySection(model: model, section: $0, columns: columns) }
+            // Reaching the bottom loads the next 5 game days.
+            if !series && model.canLoadLater {
+              ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(8)
+                .onAppear { model.loadLater() }
+            }
           }
         }
       }
       .navigationTitle("Courtside")
       .navigationSubtitle("\(count) game\(count == 1 ? "" : "s")")
+      .onChange(of: model.filterKey) {
+        model.resetTimeline()
+        if let first = model.timeline().first { Task { await jump(proxy, first.id) } }
+      }
       .toolbar {
         ToolbarItem {
+          Button {
+            model.resetTimeline()
+            if let first = model.timeline().first { Task { await jump(proxy, first.id) } }
+          } label: { Label("Today", systemImage: "calendar.badge.clock") }
+            .disabled(series || sections.isEmpty)
+            .help("Back to the next games")
+        }
+        ToolbarItem {
           Menu {
-            ForEach(monthBlocks) { b in
-              Button(b.title) { Task { await jump(proxy, b.id) } }
+            ForEach(months, id: \.self) { day in
+              Button(AppModel.monthTitle(String(day.prefix(7)))) {
+                model.resetTimeline(to: day)
+                if let first = model.timeline().first { Task { await jump(proxy, first.id) } }
+              }
             }
           } label: { Label("Jump to month", systemImage: "calendar") }
-            .disabled(model.isSeriesView || blocks.isEmpty)
+            .disabled(series || months.isEmpty)
             .help("Jump to month")
         }
       }
     }
+    }
   }
 }
 
-/// One sticky section. SwiftUI doesn't stack nested pinned headers, so the month and the day share
-/// one header ("October 2026 · Mon 26 Oct"); the first day of a month also opens with a month banner.
-/// Upcoming has no banner: its header right above would say "Upcoming" a second time.
-struct FlatSection: Identifiable {
-  let id: String
-  let blockID: String
-  let month: String
-  let day: String
-  let first: Bool            // first section of its block (the "Jump to" target)
-  let banner: String?        // block title, on its first section only
-  let games: [Game]
-  let laterCount: Int        // "show more upcoming" button, on the last upcoming section
+/// First game day of each month, for "Jump to month".
+private func monthStarts(_ days: [String]) -> [String] {
+  var seen = Set<String>()
+  return days.filter { seen.insert(String($0.prefix(7))).inserted }
 }
 
+/// One sticky section. SwiftUI doesn't stack nested pinned headers, so the month and the day share
+/// one header ("October 2026 · Mon 26 Oct"); the first loaded day of a month opens with a month banner.
+struct FlatSection: Identifiable {
+  let id: String
+  let month: String
+  let day: String
+  let banner: String?
+  let games: [Game]
+}
+
+/// Timeline days, oldest first; a banner wherever the month changes.
+@MainActor private func timelineSections(_ days: [DayGroup]) -> [FlatSection] {
+  var lastMonth = ""
+  return days.map { d in
+    let ym = String(d.id.prefix(7)), month = AppModel.monthTitle(ym)
+    defer { lastMonth = ym }
+    return FlatSection(id: d.id, month: month, day: d.title, banner: ym != lastMonth ? month : nil, games: d.games)
+  }
+}
+
+/// Series view: one section per matchup.
 private func flat(_ blocks: [Block]) -> [FlatSection] {
   blocks.flatMap { b in
-    b.days.enumerated().map { i, d in
-      FlatSection(id: b.id + "/" + d.id, blockID: b.id, month: b.title, day: d.title, first: i == 0,
-                  banner: i == 0 && !d.title.isEmpty && b.id != "upcoming" ? b.title : nil,
-                  games: d.games, laterCount: i == b.days.count - 1 ? b.laterCount : 0)
-    }
+    b.days.map { d in FlatSection(id: b.id + "/" + d.id, month: b.title, day: d.title, banner: nil, games: d.games) }
   }
 }
 
 struct DaySection: View {
   var model: AppModel
   let section: FlatSection
+  let columns: Int
 
   var body: some View {
     Section {
+      Color.clear.frame(height: 0).id(section.id)   // scroll target ("Today", month, keep-in-place)
       if let banner = section.banner {
-        Text(banner).font(.title.bold()).padding(.horizontal, 20).padding(.top, 8).id(section.blockID)
-      } else if section.first {
-        Color.clear.frame(height: 0).id(section.blockID)   // "Jump to" target without a banner
+        Text(banner).font(.title.bold()).padding(.horizontal, 20).padding(.top, 8)
       }
-      LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 320), spacing: 16)], spacing: 16) {
-        ForEach(section.games) { GameCard(model: model, game: $0) }
+      // Plain rows, not a lazy grid: a day has at most ~15 games, and exact heights keep
+      // "load earlier" and the jumps landing where they should.
+      VStack(alignment: .leading, spacing: 16) {
+        ForEach(Array(stride(from: 0, to: section.games.count, by: columns)), id: \.self) { i in
+          let row = section.games[i..<min(i + columns, section.games.count)]
+          HStack(alignment: .top, spacing: 16) {
+            ForEach(row) { GameCard(model: model, game: $0).frame(maxWidth: .infinity) }
+            ForEach(0..<(columns - row.count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity, maxHeight: 0) }
+          }
+        }
       }
       .padding(.horizontal, 20).padding(.bottom, 12)
-      if section.laterCount > 0 {
-        Button(model.showLaterUpcoming ? "Hide later games" : "Show \(section.laterCount) more upcoming games") {
-          model.showLaterUpcoming.toggle()
-        }
-        .padding(.horizontal, 20)
-      }
     } header: {
       StickyHeader(month: section.month, day: section.day)
     }
