@@ -22,11 +22,22 @@ enum Status: String {
   case upcoming = "Upcoming", notPosted = "Not posted yet", available = "Available", downloaded = "Downloaded"
 }
 
-struct DaySection: Identifiable {
-  let id: String        // "upcoming" or the date
+/// Games of one day (or, in a series view, one series; `title` is then empty or the matchup).
+struct DayGroup: Identifiable {
+  let id: String
   let title: String
   let games: [Game]
 }
+
+/// A top-level, pinned section: "Upcoming", a month ("October 2026"), or one playoff series.
+struct Block: Identifiable {
+  let id: String
+  let title: String
+  let days: [DayGroup]
+  var laterCount = 0     // upcoming games past the next 7 days (hidden until asked for)
+}
+
+enum Dimension { case league, season, stage, team }
 
 @MainActor @Observable
 final class AppModel {
@@ -45,6 +56,7 @@ final class AppModel {
   var season: String?
   var stage: String?
   var team: String?
+  var showLaterUpcoming = false
 
   init() {
     settings = Settings.load(paths)
@@ -104,26 +116,68 @@ final class AppModel {
     return g.date > Self.format(now, "yyyy-MM-dd")
   }
 
-  /// Games after the filters, as "Upcoming" (soonest first) then one section per date, newest first.
-  var sections: [DaySection] {
-    let now = Date()
-    let shown = games.filter { g in
-      (league == nil || g.league == league) && (season == nil || g.season == season)
-        && (stage == nil || g.stage == stage) && (team == nil || g.home == team || g.away == team)
+  /// Series stages are shown per matchup, ordered by game number, instead of per day.
+  static let seriesStages: Set<String> = ["first-round", "semis", "conf-finals", "finals"]
+  var isSeriesView: Bool { stage.map(Self.seriesStages.contains) ?? false }
+
+  /// Games after the filters; `ignoring` leaves one filter out (for the sidebar's counts).
+  func filtered(ignoring dim: Dimension? = nil) -> [Game] {
+    games.filter { g in
+      (dim == .league || league == nil || g.league == league) && (dim == .season || season == nil || g.season == season)
+        && (dim == .stage || stage == nil || g.stage == stage) && (dim == .team || team == nil || g.home == team || g.away == team)
         && (scope != .favorites || g.favorite) && (scope != .downloaded || downloaded.contains(g.id))
     }
+  }
+
+  func counts(by key: (Game) -> String, ignoring dim: Dimension) -> [String: Int] {
+    filtered(ignoring: dim).reduce(into: [:]) { $0[key($1), default: 0] += 1 }
+  }
+
+  /// The grid's content: "Upcoming" (next 7 days by day, the rest on request), then one block per
+  /// month, newest first. A series stage instead gets one block per matchup.
+  func blocks(now: Date = Date()) -> [Block] {
+    let shown = filtered()
+    if isSeriesView { return seriesBlocks(shown) }
+    var out: [Block] = []
     let upcoming = shown.filter { isUpcoming($0, now: now) }
       .sorted { ($0.start ?? .distantFuture, $0.id) < ($1.start ?? .distantFuture, $1.id) }
-    let past = Dictionary(grouping: shown.filter { !isUpcoming($0, now: now) }, by: \.date)
-    var out: [DaySection] = []
-    if !upcoming.isEmpty { out.append(DaySection(id: "upcoming", title: "Upcoming", games: upcoming)) }
-    for date in past.keys.sorted(by: >) {
-      out.append(DaySection(id: date, title: Self.dayTitle(date), games: past[date]!.sorted { ($0.start ?? .distantPast) > ($1.start ?? .distantPast) }))
+    if !upcoming.isEmpty {
+      let weekOut = Self.format(now.addingTimeInterval(7 * 86400), "yyyy-MM-dd")
+      let near = upcoming.filter { $0.date <= weekOut }
+      let later = upcoming.count - near.count
+      out.append(Block(id: "upcoming", title: "Upcoming", days: dayGroups(showLaterUpcoming ? upcoming : near, now: now, newestFirst: false), laterCount: later))
+    }
+    let past = shown.filter { !isUpcoming($0, now: now) }
+    let months = Dictionary(grouping: past, by: { String($0.date.prefix(7)) })
+    for month in months.keys.sorted(by: >) {
+      out.append(Block(id: "m-\(month)", title: Self.monthTitle(month), days: dayGroups(months[month]!, now: now, newestFirst: true)))
     }
     return out
   }
 
-  var shownCount: Int { sections.reduce(0) { $0 + $1.games.count } }
+  private func dayGroups(_ games: [Game], now: Date, newestFirst: Bool) -> [DayGroup] {
+    let byDay = Dictionary(grouping: games, by: \.date)
+    let days = newestFirst ? byDay.keys.sorted(by: >) : byDay.keys.sorted()
+    let today = Self.format(now, "yyyy-MM-dd")
+    let yesterday = Self.format(now.addingTimeInterval(-86400), "yyyy-MM-dd")
+    let tomorrow = Self.format(now.addingTimeInterval(86400), "yyyy-MM-dd")
+    return days.map { day in
+      let title = day == today ? "Today" : day == yesterday ? "Yesterday" : day == tomorrow ? "Tomorrow" : Self.shortDay(day)
+      let sorted = byDay[day]!.sorted { newestFirst ? ($0.start ?? .distantPast) > ($1.start ?? .distantPast) : ($0.start ?? .distantFuture) < ($1.start ?? .distantFuture) }
+      return DayGroup(id: day, title: title, games: sorted)
+    }
+  }
+
+  private func seriesBlocks(_ shown: [Game]) -> [Block] {
+    let series = Dictionary(grouping: shown) { "\($0.season)-\($0.stage)-" + [$0.home, $0.away].sorted().joined(separator: "-") }
+    return series.map { key, games in
+      let ordered = games.sorted { ($0.gameNumber ?? 0, $0.date) < ($1.gameNumber ?? 0, $1.date) }
+      let first = ordered[0]
+      let title = "\(team(first.league, first.home)?.shortName ?? first.homeName) vs \(team(first.league, first.away)?.shortName ?? first.awayName)"
+      return Block(id: key, title: title, days: [DayGroup(id: key, title: "", games: ordered)])
+    }
+    .sorted { ($0.days[0].games[0].date, $0.id) > ($1.days[0].games[0].date, $1.id) }
+  }
 
   // MARK: actions
 
@@ -186,5 +240,6 @@ final class AppModel {
   }
 
   static func dayTitle(_ ymd: String) -> String { parseDay(ymd).map { format($0, "EEEE, MMMM d, yyyy") } ?? ymd }
-  static func shortDay(_ ymd: String) -> String { parseDay(ymd).map { format($0, "EEE, MMM d") } ?? ymd }
+  static func shortDay(_ ymd: String) -> String { parseDay(ymd).map { format($0, "EEE d MMM") } ?? ymd }
+  static func monthTitle(_ ym: String) -> String { parseDay(ym + "-01").map { format($0, "MMMM yyyy") } ?? ym }
 }
