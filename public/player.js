@@ -18,6 +18,11 @@ let lastStatus = null, dragging = false, onCloseCb = null, openedAt = 0;
 // What's playing: one of the game's releases (sources) that has a torrent, and a file in it.
 let releases = [], rel = null, fileIdx = 0, startAt = null;
 const streamUrl = (action, extra = '') => `/api/stream/${rel.id}/${action}?file=${fileIdx}${extra}`;
+// Id of the current MSE /play request. Status polls report our position under it, and the server
+// keeps that stream at most `aheadMax` seconds in front (see pacedPipe in lib/streamer.mjs).
+let playId = null;
+const clockParams = () => playId && pipe
+  ? `&play=${playId}&at=${el.video.currentTime.toFixed(1)}&ahead=${Math.round(pipe.aheadMax)}` : '';
 
 const fmt = (s) => {
   if (s == null || !isFinite(s)) return '--:--';
@@ -60,7 +65,7 @@ function savePosition() {
 // Safari won't play a progressive MP4 of unknown length from a plain <video src>, so the
 // stream is fetched here and appended to a SourceBuffer (works the same in Chrome/Firefox).
 const MSE = window.MediaSource || window.ManagedMediaSource;
-const AHEAD_MAX = 120; // seconds buffered ahead before we stop reading (ffmpeg then waits too)
+const AHEAD_MAX = 120; // seconds the server may send ahead of playback (it pauses ffmpeg beyond that)
 const QUOTA_GIVE_UP = 30000; // ms the buffer may stay full with playback not moving before we fail
 const KEEP_BEHIND = 30; // seconds of already-played video kept for small rewinds
 let pipe = null;
@@ -121,10 +126,11 @@ function startMse(src, mime) {
     try { res = await fetch(src, { signal: p.ctrl.signal }); } catch { return; }
     if (!res.ok) return pipeError(p, new Error(await res.text()));
     const reader = res.body.getReader();
+    // We read as fast as data comes: not reading wouldn't hold ffmpeg back (WebKit keeps
+    // downloading into memory anyway). The server limits how far ahead it sends instead.
     let first = true;
     try {
       while (!p.dead) {
-        while (!p.dead && bufferedAhead() > p.aheadMax) await sleep(500);
         const { value, done: eof } = await reader.read();
         if (p.dead) return;
         if (eof) break;
@@ -177,8 +183,11 @@ function load(t) {
   const reencode = IS_WEBKIT;
   const src = streamUrl('play', `&t=${offset.toFixed(2)}${reencode ? '&reencode=1' : ''}`);
   const mime = reencode ? lastStatus?.mimeReencoded : lastStatus?.mime;
-  if (MSE && mime && MSE.isTypeSupported(mime)) startMse(src, mime);
-  else el.video.src = src; // no MediaSource (old iOS): let the browser try directly
+  playId = null;
+  if (MSE && mime && MSE.isTypeSupported(mime)) {
+    playId = Math.random().toString(36).slice(2);
+    startMse(`${src}&play=${playId}`, mime);
+  } else el.video.src = src; // no MediaSource (old iOS): let the browser try directly
   started = true;
   showMsg(`Buffering from ${fmt(offset)}…`);
   el.video.play().catch(() => { el.bigPlay.hidden = false; hideMsg(); });
@@ -228,7 +237,7 @@ function drawPieces(pieces) {
 async function pollStatus() {
   if (!game) return;
   const want = `${rel.id}/${fileIdx}`;
-  const s = await api(streamUrl('status')).catch(() => null);
+  const s = await api(streamUrl('status', clockParams())).catch(() => null);
   if (!game || want !== `${rel.id}/${fileIdx}` || !s) return;
   lastStatus = s;
   renderPickers(s);

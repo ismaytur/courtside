@@ -84,6 +84,12 @@ clone: `COURTSIDE_HOME=… PORT=0 node scripts/app.mjs` (exit code 75 = restart 
   separate layout blocks, so `parseListing` pairs each title with the links that follow it.
   Archive pages 10-19 aren't linked from page 1 but exist until a 404. Some titles have typos,
   Cyrillic look-alike letters or a truncated year (handled in `classify.mjs`).
+- **WebKit has no fetch backpressure**: it keeps downloading a response body the page isn't
+  reading. The player used to stop reading to throttle ffmpeg; instead minutes of video piled
+  up in the browser, overflowed Safari's ~300 MB MSE buffer once appended, and after that
+  WebKit refused every append ("The quota has been exceeded" a few minutes in). The server
+  paces `/play` now (`pacedPipe` in `lib/streamer.mjs`). To test long playback, a local file
+  through the same ffmpeg args in Playwright WebKit reproduces it in ~6 minutes.
 - **AC-3 audio**: these releases carry AC-3 5.1, which no browser decodes, so `/play`
   always transcodes audio to AAC.
 - **Safari**: needs MSE (not `<video src>`) for a stream of unknown length, and stalls on open-GOP

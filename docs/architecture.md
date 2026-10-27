@@ -136,9 +136,9 @@ color in `public/util.js` and `--<league>` in `style.css` + `phaseFor`/`seasonFo
 | `POST /api/storage/clear` | delete all cached videos/torrents |
 | `POST /api/app/check-updates` | Mac app only (hook) |
 | `POST /api/stream/:releaseId/start` | start a torrent session (also clears the game's NEW) |
-| `GET /api/stream/:releaseId/status?file=N` | peers, speed, progress, piece map, `files[]`, probe (duration, codecs, MSE mime types) |
+| `GET /api/stream/:releaseId/status?file=N[&play=id&at=sec&ahead=sec]` | peers, speed, progress, piece map, `files[]`, probe (duration, codecs, MSE mime types) |
 | `GET /api/stream/:releaseId/raw?file=N` | original file bytes, Range support (VLC/IINA, and ffmpeg's input) |
-| `GET /api/stream/:releaseId/play?file=N&t=sec[&reencode=1]` | fragmented MP4 for the browser |
+| `GET /api/stream/:releaseId/play?file=N&t=sec[&reencode=1][&play=id]` | fragmented MP4 for the browser (paced to the player's reports when `play` is set) |
 | `POST /api/stream/:releaseId/stop` | stop the torrent (also happens 3 min after last access) |
 | `GET /img?u=<url>` | poster through the cache (only `imageHosts` of registered sources) |
 
@@ -161,8 +161,14 @@ color in `public/util.js` and `--<league>` in `style.css` + `phaseFor`/`seasonFo
   with `h264_videotoolbox` (`-a53cc 0` is required: the broadcasts carry caption SEI that breaks
   the encoder). Chrome/Firefox get the copied video.
 - **Player**: the page fetches `/play` and appends to a `MediaSource` SourceBuffer (Safari won't
-  play a progressive MP4 of unknown length from `<video src>`), keeps ~120 s ahead and 30 s
-  behind, hops small buffer gaps. Overlay controls in fullscreen auto-hide after 3 s.
+  play a progressive MP4 of unknown length from `<video src>`), keeps 30 s behind, hops small
+  buffer gaps. Overlay controls in fullscreen auto-hide after 3 s.
+- **Pacing**: the server, not the page, keeps `/play` ~120 s ahead of playback. WebKit keeps
+  downloading a `fetch()` body the page isn't reading, so not reading can't hold ffmpeg back.
+  Each `/play` carries a `play=<id>`; the player's status polls add `play`, `at` (its
+  `currentTime`) and `ahead` (its budget, lowered after a `QuotaExceededError`), and
+  `pacedPipe()` stops reading ffmpeg's stdout (ffmpeg blocks) once its `-progress` `out_time`
+  is `ahead` seconds past `at`.
 - **Cache**: `streams/` is LRU-trimmed to `storage.cacheGB`; upload is capped at
   `storage.uploadKBps` (`client.throttleUpload`). Sessions stop 3 minutes after last access.
 

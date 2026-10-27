@@ -254,10 +254,12 @@ async function handle(req, res) {
           streamer.start(release).catch(() => {}); // progress is reported through /status
           return send(res, 202, await streamer.status(id, file));
         }
-        case 'status': return send(res, 200, await streamer.status(id, file));
+        case 'status':
+          if (p.has('play')) streamer.reportClock(p.get('play'), Number(p.get('at')), Number(p.get('ahead')));
+          return send(res, 200, await streamer.status(id, file));
         case 'stop': streamer.stop(id); return send(res, 200, { stopped: true });
         case 'raw': return streamer.serveRaw(req, res, id, file);
-        case 'play': return streamer.servePlay(req, res, id, Math.max(0, Number(p.get('t')) || 0), { reencode: p.get('reencode') === '1', file });
+        case 'play': return streamer.servePlay(req, res, id, Math.max(0, Number(p.get('t')) || 0), { reencode: p.get('reencode') === '1', file, play: p.get('play') });
       }
     }
 
