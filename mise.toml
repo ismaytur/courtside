@@ -1,0 +1,27 @@
+# Dev tools for the native app, pinned. `mise install` fetches them (once, into mise's own folder);
+# nothing goes into Homebrew or the system.
+#
+#   mise run vendor   download + build libtorrent and ffmpeg into vendor/ (pinned, checksummed)
+#   mise run build    swift build (runs vendor first if it hasn't been)
+#   mise run test     swift test
+#   mise run prototype -- --torrent <file|url> [--lan]   the step-0 streaming prototype
+
+[tools]
+cmake = "4.2.8"
+ninja = "1.13.2"
+
+[tasks.vendor]
+description = "Download and build libtorrent + ffmpeg into vendor/"
+run = "scripts/vendor/all.sh"
+
+[tasks.build]
+description = "Build the Swift package"
+run = ["scripts/vendor/all.sh --if-missing", "swift build"]
+
+[tasks.test]
+description = "Run the tests"
+run = ["scripts/vendor/all.sh --if-missing", "swift test"]
+
+[tasks.prototype]
+description = "Run the streaming prototype: mise run prototype -- --torrent <url> [--lan]"
+run = "scripts/vendor/all.sh --if-missing && swift run Prototype"

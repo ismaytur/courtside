@@ -35,3 +35,4 @@ dist/
 .mise/
 vendor/build/
 vendor/src/
+vendor/downloads/
