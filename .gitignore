@@ -1,8 +1,7 @@
 # Dependencies
 node_modules/
 
-# Local data lives in ~/.courtside (lib/paths.mjs); data/ is where older versions kept it.
-data/
+# Local data lives in ~/.courtside (Paths.swift).
 
 # Never commit media or torrent files, wherever they end up
 *.torrent

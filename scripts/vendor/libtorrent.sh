@@ -10,7 +10,9 @@ fetch boost "$BOOST_URL" "$BOOST_SHA256" "boost_${BOOST_VERSION//./_}/boost"
 
 mkdir -p "$BUILD/boost/include"
 rm -rf "$BUILD/boost/include/boost"
-ln -s "$SRC/boost/boost" "$BUILD/boost/include/boost"
+# Copy the headers, don't symlink them: a symlink into vendor/src breaks if that folder is
+# cleaned, and the build then fails with "boost/config.hpp not found".
+cp -R "$SRC/boost/boost" "$BUILD/boost/include/boost"
 
 log "build libtorrent $LIBTORRENT_VERSION"
 out="$BUILD/libtorrent"

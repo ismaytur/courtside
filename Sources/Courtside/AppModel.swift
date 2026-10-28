@@ -318,13 +318,33 @@ final class AppModel {
     defer { checkingPier = false }
     do {
       let p = pier()
-      try await p.signIn()
-      let found = try await p.update(library: library, league: NBA())
+      // Give up after 60 s so the check can't spin forever if a step hangs (the network, the forum,
+      // the browser warm-up): the spinner stops and the user gets a message instead.
+      let found = try await Self.withTimeout(seconds: 60) {
+        try await p.signIn()
+        return try await p.update(library: library, league: NBA())
+      }
       pierNote = nil
       reload()
       if manual { message = found == 0 ? "No newly posted games on 720pier." : "Found \(found) newly posted game\(found == 1 ? "" : "s") on 720pier." }
+    } catch is TimeoutError {
+      Log.warn("720pier", "check gave up after 60 s")
+      let note = "720pier didn't answer within 60 seconds. Check Help ▸ Show Logs for where it stopped."
+      if manual { message = note } else { pierNote = note }
     } catch {
       if manual { message = Self.explain(error) } else { pierNote = Self.explain(error) }
+    }
+  }
+
+  struct TimeoutError: Error {}
+
+  /// Run `work`, but throw `TimeoutError` if it isn't done within `seconds`.
+  static func withTimeout<T: Sendable>(seconds: Double, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask { try await work() }
+      group.addTask { try await Task.sleep(for: .seconds(seconds)); throw TimeoutError() }
+      defer { group.cancelAll() }
+      return try await group.next()!
     }
   }
 

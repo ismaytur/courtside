@@ -1,202 +1,69 @@
 # How Courtside works
 
-Courtside is a Node server (no framework, no build step) plus a vanilla-JS single page. The server
-collects basketball game listings from source sites, keeps them in SQLite, and streams torrents
-to the browser. A small Swift app wraps it as a self-updating Mac app.
+Courtside is a native macOS app. It shows the official NBA schedule as a browsable library, finds
+each game on 720pier.ru, and streams it from the torrent through a bundled ffmpeg into Apple's own
+video player (with AirPlay to an Apple TV). There is no server and no web UI; everything runs in one
+Swift process.
+
+## Pieces
+
+- **`CourtsideCore`** — all the non-UI logic, so `swift test` can exercise it:
+  - `DB/` — a small SQLite wrapper (`Database`) and `Library` (the `games` and `teams` tables).
+  - `Leagues/` — the `League` protocol and the NBA plug-in (schedule, teams, stages). *What games exist.*
+  - `Sources/` — the `Source` protocol and `Pier720` (sign-in, listing/topic parsing, torrent link). *Where the video is.*
+  - `Web/` — `Fetch.swift` (the single `fetch(_:)` every request goes through) and `Web.swift` (retries, decoding).
+  - `Torrent/` — Swift over `TorrentBridge` (libtorrent): add, pick files, piece deadlines, progress.
+  - `Media/` — keyframe index, an on-demand HLS playlist/segments, and a local HTTP server that feeds Apple's player.
+  - `Playback/` — ties a game to its torrent, stream and watch state.
+  - `Library/` — `ScheduleRefresh` and `Logos`.
+  - `Log.swift`, `Paths.swift`, `Settings.swift`.
+- **`Courtside`** — the SwiftUI app: the timeline of game days, sidebar filters, settings, the player overlay.
+- **`TorrentBridge`** — a thin C API over libtorrent (C++), linked statically.
+
+## Data
+
+Everything local lives in `~/.courtside` (`COURTSIDE_HOME` to override):
 
 ```
- sources (lib/sources/*)          ~/.courtside/                      browser (public/*)
- ┌──────────────────────┐         ┌───────────────────────┐          ┌───────────────────────┐
- │ sport-video.org.ua   │ listPage│ games.db   (SQLite)   │  /api/*  │ app.js     library    │
- │ …future sources      ├────────►│ config.json (settings)├─────────►│ settings.js  popup    │
- └──────────────────────┘ resolve │ img/  streams/        │          │ player.js  MSE player │
-            ▲                     │ torrents/             │          └──────────▲────────────┘
-            │                     └──────────▲────────────┘                     │ fMP4 stream
-   lib/sync.mjs ── classify ── addRelease ───┘                                  │
-                                                                                │
-   lib/streamer.mjs: webtorrent ──► /raw (file bytes, Range) ──► ffmpeg ──► /play
+games.db                         the library (all leagues)
+config.json                      settings (incl. the 720pier login)
+leagues/<league>/logos/          team logos, fetched once
+leagues/<league>/downloads/<id>/ a game's torrent content (a file or folder) + hls/
+logs/ or ~/Library/Logs/Courtside/  rotating logs
 ```
 
-## Files
+A game's id is readable and stable: `nba-2026-27-regular-2026-10-26-atl-hou`
+(league-season-stage-date-away-home; the date is the league's local day). Schedule refreshes match
+rows by the provider's event id, so a game that moves keeps its watch position and its 720pier link.
+**Scores are never stored.**
 
-| Path | Role |
-| --- | --- |
-| `server.mjs` | HTTP server and every API route; `startServer()` (also run directly by `npm start`); schedules startup/periodic fetches |
-| `lib/paths.mjs` | All local paths (`~/.courtside`, overridable with `COURTSIDE_HOME`) |
-| `lib/settings.mjs` | Settings = `config.defaults.json` overlaid with `~/.courtside/config.json` |
-| `lib/db.mjs` | SQLite schema, `openDb()`, `addRelease()` (the match-or-create logic) |
-| `lib/classify.mjs` | Title → date, league, season, stage, home/away team; `matchKey()` |
-| `lib/sync.mjs` | The fetch engine (batches, stop rule, NEW flags, per-source runs) |
-| `lib/sources/` | One module per source + `index.mjs` registry + `http.mjs` helper |
-| `lib/streamer.mjs` | Torrent sessions, file selection, `/raw` + `/play` output, video cache |
-| `lib/images.mjs` | Poster cache naming/allow-list |
-| `lib/prune.mjs` | Delete all games of given leagues (+ posters, cached videos) |
-| `lib/gitsync.mjs` | Mac app self-update (match GitHub `main`) |
-| `scripts/app.mjs` | Mac app entry point: update → `npm ci` if needed → `startServer()` |
-| `scripts/build-mac-app.sh` | Builds `dist/Courtside.app` |
-| `scripts/prune.mjs` | CLI for `lib/prune.mjs` |
-| `mac/Courtside.swift` | The native window (WKWebView) and Node process supervisor |
-| `public/` | `index.html`, `style.css`, `app.js` (library), `settings.js` (popup), `player.js`, `util.js` |
-| `config.defaults.json` | Default settings, versioned |
+## The schedule (library)
 
-## Local data
+`ScheduleRefresh` asks each enabled league for its teams and this season's games and upserts them.
+The NBA plug-in reads ESPN's public site API: each team's schedule, deduplicated by event id, is the
+whole league's (30 requests per season type; nba.com refuses scripted requests, so it isn't used).
+It runs on launch, weekly, on demand, and when the season rolls over (July).
 
-Nothing personal is in git. Everything lives in `~/.courtside` (`lib/paths.mjs`):
+## Finding and playing a game
 
-- `games.db`: SQLite, rollback-journal mode (no `-wal`/`-shm` files)
-- `config.json`: written by the settings popup; only keys you saved
-- `img/<host>-<file>`: poster cache (`lib/images.mjs`)
-- `streams/<releaseId>/…`: torrent data per release (size-capped LRU cache)
-- `torrents/<releaseId>.torrent`
+1. The library shows every scheduled game. A game with no 720pier topic yet is "Not posted yet".
+2. **Check 720pier** (or Play on a game with no topic) signs in, reads the newest forum pages, and
+   matches each topic to a scheduled game by date + both teams; the match records the topic URL.
+3. **Play**: Courtside downloads the `.torrent`, adds it to the shared libtorrent session (into the
+   game's folder), picks the video file, and serves it as HLS. `Media` builds the playlist from the
+   file's keyframe index and remuxes each ~6 s segment on demand (`-c copy`, no re-encode — 720pier
+   files are already H.264 + AAC), asking libtorrent for that byte range first. Apple's `AVPlayer`
+   plays it from a local HTTP server; far seeks fetch their pieces on demand.
+4. **AirPlay**: the player offers the route picker. Because the Apple TV fetches the stream itself,
+   the server binds to the Mac's LAN address when "Allow AirPlay" is on (the default).
 
-A missing or empty folder means a fresh library; the startup fetch imports everything. If
-`games.db` doesn't have the current layout, `openDb()` renames it to `games.unsupported.db` and
-starts fresh. There is no conversion code: if the schema ever needs a breaking change, a fresh
-library plus a re-fetch is the policy. Additive changes (new column/table) go in `SCHEMA` as
-`CREATE … IF NOT EXISTS` / an `ALTER TABLE … ADD COLUMN` guarded by `PRAGMA table_info`.
+Watch position is saved every 10 s and on close; a complete download marks the game Downloaded. The
+download cache is capped (`storage.cacheGB`), dropping the least-recently-watched games first, never
+the one playing.
 
-## Database (`lib/db.mjs`)
+## The app bundle
 
-```
-games      id, match_key, title, game_date, league, season, phase, home_team, away_team, is_event,
-           image_url, favorite, downloaded, is_new, watch_position, watch_release, watch_file,
-           duration, added_at
-releases   id, game_id → games, source, source_key, raw_title, detail_url, torrent_url, mega_url,
-           other_url, image_url, video_info, resolution, language, detail_error, list_page, added_at
-           UNIQUE (source, source_key)
-meta       key/value: last_sync, archive_complete:<sourceId>
-sync_runs  history shown under "Recent fetches"
-```
-
-- A **game** is a real game; your state (favorite, watch progress, NEW) lives here.
-- A **release** is one listing on one source with its links. Streaming, the video cache and
-  `.torrent` files are keyed by **release id**.
-- `match_key` (`classify.matchKey`) identifies a game across listings/sources:
-  `date|teamA|teamB` with the two normalized team names sorted (so "A at B" = "B vs A"), or
-  `date|normalized title` for events without teams. Same date + teams on two sources → one game.
-- `addRelease(db, game, release, { markNew })` returns `'duplicate'` (same source+key, or the
-  game already has that exact torrent URL), `'release'` (attached to an existing game) or
-  `'game'` (new game created; `is_new = markNew`).
-
-## Fetching (`lib/sync.mjs`)
-
-For each enabled source (`settings.sources[id] !== false`), in `SOURCES` order:
-
-1. Read listing pages (`source.listPage(n)`, n = 0,1,2,… until it returns null) into a buffer,
-   dropping entries already seen in this run (sites repeat entries across pages).
-2. Take `batchSize` entries. Classify each title in listing order (a broken year borrows the
-   previous entry's date).
-3. Split: **known** (same `source`+`source_key` saved), **ignored** (league in
-   `leagues.ignore`), **fresh**. Known entries whose detail page failed before are re-resolved.
-4. `source.resolve(entry)` for fresh entries (4 at a time, 120 ms apart), then `addRelease`.
-5. Stop rule: if the batch had any known entry and the source's archive was fully walked once
-   (`meta archive_complete:<id>`), this source is caught up. Otherwise next batch. Reaching the
-   end of the archive sets `archive_complete:<id>`.
-
-`mode: 'full'` never stops early (Full rescan). New games are marked NEW only when the source's
-archive was already complete (so a first import doesn't flag 1,000 games). Triggers:
-`startup` (1.5 s after `startServer`, if `fetch.onStartup`), `schedule` (checked every minute
-against `fetch.everyHours` and `meta last_sync`), `manual` (↻ / Fetch now / Full rescan).
-Status (`GET /api/sync`) includes a log the UI shows live.
-
-## Classification (`lib/classify.mjs`)
-
-Input is a title like `Las Vegas Aces at Golden State Valkyries 04.10.2026`:
-
-- Date: `dd.mm.yy(yy)` at the end.
-- Teams: split on ` at `/`@` (away at home) or ` vs `/` v `/` - ` (home first). Leading ranks
-  (`16 Siena Saints`) are stripped.
-- Each side is resolved against team dictionaries (NBA, WNBA, EuroLeague, national teams) by
-  exact alias, alias + one trailing word ("Warriors Blue"), or Levenshtein ≤ 2 ("Connecticuy
-  Sun"); Cyrillic look-alike letters are normalized. Unknown pairs are NCAA (with a short-name
-  expander, e.g. "Kansas" → "Kansas Jayhawks").
-- League = shared league of both teams, else the pro team's league, else International, else
-  NCAA. Event titles (All-Star, Draft…) are NBA/WNBA with stage "All-Star & Events".
-- Season (`2025-26` vs `2026`) and stage (Preseason/Playoffs/Finals/…) are date heuristics per
-  league in `phaseFor()`.
-
-To fix a misclassified team, add an alias in the dictionaries at the top, then **Reclassify all**
-(settings) which re-runs `classify` on each game's first release and recomputes `match_key`.
-Adding a league means: dictionary + league in `classify()` + `KNOWN_LEAGUES` (settings) +
-color in `public/util.js` and `--<league>` in `style.css` + `phaseFor`/`seasonFor` rules.
-
-## HTTP API (`server.mjs`)
-
-| Route | |
-| --- | --- |
-| `GET /api/games?q&league&season&phase&team&new&fav&dl&torrent&sort&limit&offset` | games, each with `releases[]` (best first: has torrent, higher resolution) |
-| `GET /api/facets?…` | leagues/seasons/stages/teams with counts for the current filters |
-| `GET /api/stats` | totals incl. `new`, `lastSync` |
-| `PATCH /api/games/:id` | `favorite`, `downloaded`, `is_new`, `watch_position`, `watch_release`, `watch_file`, `duration` |
-| `POST /api/games/seen` | `{ids?}` clear NEW (all if no ids) |
-| `GET/POST /api/sync` | fetch status / start `{mode: 'incremental'|'full', batchSize?}` (409 if running) |
-| `POST /api/reclassify` | re-run classification |
-| `GET/PUT /api/settings` | settings payload (settings, leagues with counts, sources, storage, runs, app) / save `{settings, leagues: {name: 'fetch'|'ignore'}, removeIgnored?}` |
-| `GET /api/settings/prune-preview?leagues=A,B` | what removing those leagues would delete |
-| `POST /api/storage/clear` | delete all cached videos/torrents |
-| `POST /api/app/check-updates` | Mac app only (hook) |
-| `POST /api/stream/:releaseId/start` | start a torrent session (also clears the game's NEW) |
-| `GET /api/stream/:releaseId/status?file=N[&play=id&at=sec&ahead=sec]` | peers, speed, progress, piece map, `files[]`, probe (duration, codecs, MSE mime types) |
-| `GET /api/stream/:releaseId/raw?file=N` | original file bytes, Range support (VLC/IINA, and ffmpeg's input) |
-| `GET /api/stream/:releaseId/play?file=N&t=sec[&reencode=1][&play=id]` | fragmented MP4 for the browser (paced to the player's reports when `play` is set) |
-| `POST /api/stream/:releaseId/stop` | stop the torrent (also happens 3 min after last access) |
-| `GET /img?u=<url>` | poster through the cache (only `imageHosts` of registered sources) |
-
-## Streaming (`lib/streamer.mjs`, `public/player.js`)
-
-- **Torrent**: webtorrent runs in Node because browsers can't talk to TCP/UDP BitTorrent peers.
-  `start(release)` downloads the .torrent once, adds it with `deselect`, picks the video files
-  (`videoFiles()`: video extensions, ≥ 50 MB, not "sample", natural sort), selects them all for
-  background download. Reads via `createReadStream` get priority, so seeking works anywhere.
-- **Multi-file torrents**: the player shows a Part picker when `files.length > 1` and moves to
-  the next part on `ended`. Watch progress stores `watch_release` + `watch_file`.
-- **Probe**: ffprobe reads `/raw?file=N` for duration, codecs and builds MSE codec strings
-  (`mime`, `mimeReencoded`). It's retried if it failed (no peers yet).
-- **`/play`**: ffmpeg `-ss t -i /raw` → `-c:v copy` (H.264/HEVC) + audio → AAC stereo (the
-  releases use AC-3, which browsers can't decode) → fragmented MP4 on stdout. Seeking outside
-  the buffered range restarts `/play` at the new `t`; the player tracks `offset` so the timeline
-  shows game time.
-- **Safari/WebKit** stalls on the open-GOP I-frames in these broadcasts (at start, after seeks,
-  even mid-stream), so `player.js` always requests `reencode=1` in WebKit: video is re-encoded
-  with `h264_videotoolbox` (`-a53cc 0` is required: the broadcasts carry caption SEI that breaks
-  the encoder). Chrome/Firefox get the copied video.
-- **Player**: the page fetches `/play` and appends to a `MediaSource` SourceBuffer (Safari won't
-  play a progressive MP4 of unknown length from `<video src>`), keeps 30 s behind, hops small
-  buffer gaps. Overlay controls in fullscreen auto-hide after 3 s.
-- **Pacing**: the server, not the page, keeps `/play` ~120 s ahead of playback. WebKit keeps
-  downloading a `fetch()` body the page isn't reading, so not reading can't hold ffmpeg back.
-  Each `/play` carries a `play=<id>`; the player's status polls add `play`, `at` (its
-  `currentTime`) and `ahead` (its budget, lowered after a `QuotaExceededError`), and
-  `pacedPipe()` stops reading ffmpeg's stdout (ffmpeg blocks) once its `-progress` `out_time`
-  is `ahead` seconds past `at`.
-- **Cache**: `streams/` is LRU-trimmed to `storage.cacheGB`; upload is capped at
-  `storage.uploadKBps` (`client.throttleUpload`). Sessions stop 3 minutes after last access.
-
-## Settings (`lib/settings.mjs`, `public/settings.js`)
-
-`loadSettings()` merges defaults and the user file on every call (no restart needed). Keys:
-`fetch.{batchSize,onStartup,everyHours}`, `leagues.{fetch,ignore}`, `sources.<id>`,
-`storage.{cacheGB,uploadKBps}`. The popup edits a draft and `PUT`s it; switching a league to
-Ignore offers `removeIgnored` (prune), switching back offers a full rescan. To add a setting:
-default in `config.defaults.json` → clamp in `loadSettings()` if numeric → read it where needed →
-add a field in `settings.js` (`data-k="group.key"` inputs are wired automatically).
-
-## Mac app
-
-`mac/Courtside.swift` (built by `scripts/build-mac-app.sh`, which records the node/git/ffmpeg
-paths in `Resources/launch.json`) does only this:
-
-1. Clone the repo into `~/Library/Application Support/Courtside/repo` if missing.
-2. Run `node scripts/app.mjs` there with `PORT` (0 the first time, then the same port), log to
-   `~/Library/Logs/Courtside.log`, read `COURTSIDE_STATUS=` (loading text) and
-   `COURTSIDE_PORT=` (load/reload the page) lines.
-3. Exit code **75** means "restart me" (an update was installed) → restart and reload the page.
-4. ⌘Q sends SIGTERM and waits up to 10 s. External links open in the default browser.
-
-`scripts/app.mjs`: `update()` (fetch `origin/main`, `reset --hard`; **GitHub always wins**) →
-if code changed: `npm ci` when the lockfile changed, exit 75 → else start the server with hooks
-(`appInfo`, `checkForUpdates`) → every 30 min check again and restart when idle (not streaming
-or fetching). So **pushing to `main` is deploying** to the app. Only Swift changes need a rebuild.
-
-Env overrides for testing a build: `COURTSIDE_SUPPORT_DIR` (clone + log location),
-`COURTSIDE_REPO_URL` (clone from e.g. a local bare repo), `COURTSIDE_HOME` (data folder).
+`mise run build` makes a self-contained `dist/Courtside.app`: the Swift binary, plus `ffmpeg` and
+`ffprobe` in `Contents/Resources` (built from source, system libraries only — check with
+`otool -L`). libtorrent is linked in statically. The bundle is ad-hoc signed. Nothing is installed
+on the Mac and nothing auto-updates; `mise run install` copies it to /Applications.
